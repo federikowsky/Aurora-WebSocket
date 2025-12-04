@@ -93,7 +93,10 @@ public import websocket.handshake :
     generateSecWebSocketKey,
     buildUpgradeRequest,
     ClientUpgradeValidation,
-    validateUpgradeResponse;
+    validateUpgradeResponse,
+    // Subprotocol negotiation
+    selectSubprotocol,
+    validateSelectedSubprotocol;
 
 // Stream abstraction
 public import websocket.stream :
@@ -116,6 +119,17 @@ public import websocket.client :
     parseWebSocketUrl,
     WebSocketClient,
     WebSocketClientException;
+
+// Extension support
+public import websocket.extension :
+    IWebSocketExtension,
+    PerMessageDeflateConfig,
+    PerMessageDeflate,
+    WebSocketExtensionException,
+    parseExtensionParams,
+    parseWindowBits,
+    parseExtensionsHeader,
+    buildExtensionsHeader;
 
 // ============================================================================
 // CONVENIENCE FUNCTIONS

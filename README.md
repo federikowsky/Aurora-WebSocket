@@ -193,7 +193,47 @@ headers["Origin"] = "https://example.com";
 auto ws = WebSocketClient.connectWithHeaders(url, headers);
 
 // With subprotocols
-auto ws = WebSocketClient.connectWithProtocols(url, ["graphql-ws"]);
+auto ws = WebSocketClient.connectWithProtocols(url, ["graphql-ws", "json"]);
+if (ws.subprotocol == "graphql-ws") {
+    // Use GraphQL protocol
+}
+```
+
+### Subprotocol Negotiation
+
+WebSocket subprotocols allow client and server to agree on an application-level protocol.
+
+**Client side:**
+```d
+// Request specific subprotocols
+auto ws = WebSocketClient.connectWithProtocols(
+    "ws://localhost:8080/api",
+    ["graphql-ws", "json", "soap"]  // In order of preference
+);
+
+// Check which protocol was selected
+if (ws.subprotocol == "graphql-ws") {
+    writeln("Using GraphQL WebSocket protocol");
+} else if (ws.subprotocol == "json") {
+    writeln("Using JSON protocol");
+}
+```
+
+**Server side:**
+```d
+// When handling upgrade request
+auto validation = validateUpgradeRequest("GET", headers);
+if (!validation.valid) { /* error */ }
+
+// Select a subprotocol from client's request
+string[] serverSupported = ["graphql-ws", "json"];
+string selected = selectSubprotocol(serverSupported, validation.protocols);
+
+// Include selected protocol in response
+string response = buildUpgradeResponse(validation.clientKey, selected);
+
+// Create connection with negotiated protocol
+auto ws = new WebSocketConnection(stream, config, selected);
 ```
 
 ## Exception Hierarchy
@@ -215,7 +255,72 @@ config.maxMessageSize = 16 * 1024 * 1024;  // 16MB
 config.autoReplyPing = true;
 config.mode = ConnectionMode.server;   // or ConnectionMode.client
 
+// Heartbeat settings
+config.pingInterval = 30.seconds;     // Send ping every 30s (0 = disabled)
+config.pongTimeout = 10.seconds;      // Close if no pong within 10s
+
 auto ws = new WebSocketConnection(stream, config);
+```
+
+### Automatic Heartbeat
+
+The library supports automatic ping/pong heartbeat to detect dead connections:
+
+```d
+auto config = WebSocketConfig();
+config.pingInterval = 30.seconds;
+config.pongTimeout = 10.seconds;
+
+auto ws = new WebSocketConnection(stream, config);
+
+// Start automatic heartbeat
+ws.startHeartbeat();
+
+// ... use connection normally ...
+
+// Monitor connection health
+if (ws.timeSinceLastPong > 5.seconds) {
+    writeln("Connection may be slow");
+}
+
+// Stop heartbeat before closing (optional, close() does this automatically)
+ws.stopHeartbeat();
+ws.close();
+```
+
+When heartbeat is active:
+- Ping frames are sent at the configured interval
+- Pong responses are tracked
+- If no pong is received within the timeout, the connection is closed automatically
+
+### Per-Message Deflate Compression (RFC 7692)
+
+The library supports per-message deflate compression to reduce bandwidth:
+
+```d
+// Create deflate extension with custom config
+auto deflateConfig = PerMessageDeflateConfig();
+deflateConfig.compressionLevel = 6;       // 1-9, higher = better compression
+deflateConfig.minCompressSize = 64;       // Don't compress small messages
+deflateConfig.clientNoContextTakeover = true;  // Reset context each message
+
+auto deflate = new PerMessageDeflate(deflateConfig, true);  // true = client mode
+
+// Server-side: Accept deflate extension during handshake
+auto validation = validateUpgradeRequest("GET", headers);
+if ("permessage-deflate" in parseExtensionsHeader(validation.extensions[0])) {
+    auto deflate = new PerMessageDeflate();
+    auto response = deflate.acceptOffer(validation.extensions[0]);
+    // Include response in upgrade headers
+}
+
+// Client-side: Generate extension offer
+auto offer = deflate.generateOffer();
+// Include in Sec-WebSocket-Extensions header during handshake
+
+// After negotiation, transform frames
+auto compressedFrame = deflate.transformOutgoing(frame);
+auto decompressedFrame = deflate.transformIncoming(receivedFrame);
 ```
 
 ## License

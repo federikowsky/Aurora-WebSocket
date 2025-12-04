@@ -35,7 +35,9 @@ import std.string : strip;
 import vibe.core.net : connectTCP, TCPConnection;
 
 import websocket.connection;
-import websocket.handshake;
+import websocket.handshake : generateSecWebSocketKey, buildUpgradeRequest, 
+                             validateUpgradeResponse, validateSelectedSubprotocol,
+                             WebSocketHandshakeException;
 import websocket.protocol : WebSocketException;
 import websocket.stream;
 
@@ -251,9 +253,20 @@ struct WebSocketClient {
             throw new WebSocketHandshakeException("Handshake failed: " ~ validation.error);
         }
         
-        // Create WebSocket connection
+        // Validate subprotocol selection
+        if (protocols !is null && protocols.length > 0) {
+            if (!validateSelectedSubprotocol(validation.protocol, protocols)) {
+                tcpConn.close();
+                throw new WebSocketHandshakeException(
+                    "Server selected invalid subprotocol: " ~ 
+                    (validation.protocol is null ? "(none)" : validation.protocol)
+                );
+            }
+        }
+        
+        // Create WebSocket connection with negotiated subprotocol
         auto stream = new VibeTCPAdapter(tcpConn);
-        return new WebSocketConnection(stream, config);
+        return new WebSocketConnection(stream, config, validation.protocol);
     }
     
     /**

@@ -355,6 +355,80 @@ ClientUpgradeValidation validateUpgradeResponse(string response, string expected
 }
 
 // ============================================================================
+// SUBPROTOCOL NEGOTIATION
+// ============================================================================
+
+/**
+ * Select a subprotocol from client's requested list that the server supports.
+ *
+ * Subprotocol negotiation (RFC 6455 Section 1.9):
+ * - Client sends list of supported protocols in Sec-WebSocket-Protocol header
+ * - Server selects one (or none) and echoes it back
+ * - Selection should prefer earlier protocols in server's list (server priority)
+ *
+ * Example:
+ * ---
+ * // Server supports graphql-ws and json protocols
+ * string[] serverProtocols = ["graphql-ws", "json"];
+ * 
+ * // Client requests json and xml
+ * string[] clientProtocols = ["json", "xml"];
+ * 
+ * auto selected = selectSubprotocol(serverProtocols, clientProtocols);
+ * assert(selected == "json");  // First server-supported match
+ * ---
+ *
+ * Params:
+ *   serverProtocols = Protocols supported by the server (in order of preference)
+ *   clientProtocols = Protocols requested by the client
+ *
+ * Returns:
+ *   Selected protocol string, or null if no match
+ */
+string selectSubprotocol(const string[] serverProtocols, const string[] clientProtocols) pure @safe nothrow {
+    if (serverProtocols.length == 0 || clientProtocols.length == 0) {
+        return null;
+    }
+    
+    // Server priority: iterate server's list first
+    foreach (serverProto; serverProtocols) {
+        foreach (clientProto; clientProtocols) {
+            if (serverProto == clientProto) {
+                return serverProto;
+            }
+        }
+    }
+    
+    return null;
+}
+
+/**
+ * Validate a selected subprotocol against requested protocols.
+ *
+ * Used by clients to verify the server selected a valid protocol.
+ *
+ * Params:
+ *   selected = Protocol selected by server (from Sec-WebSocket-Protocol response)
+ *   requested = Protocols we requested
+ *
+ * Returns:
+ *   true if the selected protocol is valid (was in our request list)
+ */
+bool validateSelectedSubprotocol(string selected, const string[] requested) pure @safe nothrow {
+    if (selected is null || selected.length == 0) {
+        return true;  // No protocol selected is valid
+    }
+    
+    foreach (proto; requested) {
+        if (proto == selected) {
+            return true;
+        }
+    }
+    
+    return false;  // Server selected a protocol we didn't request
+}
+
+// ============================================================================
 // ACCEPT KEY COMPUTATION
 // ============================================================================
 
@@ -845,4 +919,97 @@ unittest {
     auto result = validateUpgradeResponse(response, "dGhlIHNhbXBsZSBub25jZQ==");
     assert(result.valid, result.error);
     assert(result.extensions == ["permessage-deflate"]);
+}
+
+// ============================================================================
+// SUBPROTOCOL NEGOTIATION UNIT TESTS
+// ============================================================================
+
+unittest {
+    // selectSubprotocol: basic match
+    string[] serverProtos = ["graphql-ws", "json", "soap"];
+    string[] clientProtos = ["json", "xml"];
+    
+    auto selected = selectSubprotocol(serverProtos, clientProtos);
+    assert(selected == "json");
+}
+
+unittest {
+    // selectSubprotocol: server priority
+    string[] serverProtos = ["graphql-ws", "json"];
+    string[] clientProtos = ["json", "graphql-ws"];  // Client prefers json
+    
+    auto selected = selectSubprotocol(serverProtos, clientProtos);
+    // Server priority wins: graphql-ws is first in server list and client supports it
+    assert(selected == "graphql-ws");
+}
+
+unittest {
+    // selectSubprotocol: no match
+    string[] serverProtos = ["graphql-ws", "json"];
+    string[] clientProtos = ["xml", "soap"];
+    
+    auto selected = selectSubprotocol(serverProtos, clientProtos);
+    assert(selected is null);
+}
+
+unittest {
+    // selectSubprotocol: empty server list
+    string[] serverProtos;
+    string[] clientProtos = ["json"];
+    
+    auto selected = selectSubprotocol(serverProtos, clientProtos);
+    assert(selected is null);
+}
+
+unittest {
+    // selectSubprotocol: empty client list
+    string[] serverProtos = ["json"];
+    string[] clientProtos;
+    
+    auto selected = selectSubprotocol(serverProtos, clientProtos);
+    assert(selected is null);
+}
+
+unittest {
+    // selectSubprotocol: single match
+    string[] serverProtos = ["chat"];
+    string[] clientProtos = ["chat"];
+    
+    auto selected = selectSubprotocol(serverProtos, clientProtos);
+    assert(selected == "chat");
+}
+
+unittest {
+    // validateSelectedSubprotocol: valid selection
+    string[] requested = ["graphql-ws", "json"];
+    
+    assert(validateSelectedSubprotocol("json", requested) == true);
+    assert(validateSelectedSubprotocol("graphql-ws", requested) == true);
+}
+
+unittest {
+    // validateSelectedSubprotocol: invalid selection
+    string[] requested = ["graphql-ws", "json"];
+    
+    assert(validateSelectedSubprotocol("xml", requested) == false);
+    assert(validateSelectedSubprotocol("soap", requested) == false);
+}
+
+unittest {
+    // validateSelectedSubprotocol: null/empty selection is valid
+    string[] requested = ["graphql-ws", "json"];
+    
+    assert(validateSelectedSubprotocol(null, requested) == true);
+    assert(validateSelectedSubprotocol("", requested) == true);
+}
+
+unittest {
+    // validateSelectedSubprotocol: empty request list
+    string[] requested;
+    
+    // No protocols requested, null selection is valid
+    assert(validateSelectedSubprotocol(null, requested) == true);
+    // But any selection would be invalid (server shouldn't select if we didn't request)
+    assert(validateSelectedSubprotocol("json", requested) == false);
 }

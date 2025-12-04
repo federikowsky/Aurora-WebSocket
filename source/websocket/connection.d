@@ -40,7 +40,9 @@
  */
 module websocket.connection;
 
-import core.time : Duration, seconds;
+import core.time : Duration, seconds, MonoTime;
+
+import vibe.core.core : Timer, setTimer;
 
 import websocket.message;
 import websocket.protocol;
@@ -110,6 +112,9 @@ struct WebSocketConfig {
     /// Interval for automatic ping frames (0 = disabled)
     Duration pingInterval = Duration.zero;
 
+    /// Timeout waiting for pong response (default: 30 seconds, 0 = no timeout)
+    Duration pongTimeout = 30.seconds;
+
     /// Timeout for read operations (0 = no timeout)
     Duration readTimeout = Duration.zero;
 
@@ -118,6 +123,9 @@ struct WebSocketConfig {
 
     /// Connection mode: server (default) or client
     ConnectionMode mode = ConnectionMode.server;
+    
+    /// Subprotocols supported (server) or requested (client)
+    string[] subprotocols;
     
     /// Helper property for backward compatibility and internal use
     @property bool serverMode() const pure @safe nothrow {
@@ -149,6 +157,7 @@ class WebSocketConnection {
     private bool _connected;
     private bool _closeSent;
     private bool _closeReceived;
+    private string _subprotocol;  // Negotiated subprotocol (null if none)
 
     // Fragment reassembly state
     private Opcode _fragmentOpcode;
@@ -157,6 +166,13 @@ class WebSocketConnection {
     // Read buffer for streaming frame reads
     private ubyte[] _readBuffer;
     private size_t _readBufferPos;
+
+    // Heartbeat state
+    private Timer _heartbeatTimer;
+    private bool _heartbeatActive;
+    private MonoTime _lastPongTime;
+    private bool _awaitingPong;
+    private uint _pingSequence;  // Sequence number for ping payloads
 
     /**
      * Create a WebSocket connection from a stream.
@@ -167,15 +183,23 @@ class WebSocketConnection {
      * Params:
      *   stream = Connected stream (e.g., VibeTCPAdapter)
      *   config = Connection configuration
+     *   negotiatedSubprotocol = Subprotocol agreed during handshake (null if none)
      */
-    this(IWebSocketStream stream, WebSocketConfig config = WebSocketConfig.init) @safe {
+    this(IWebSocketStream stream, WebSocketConfig config = WebSocketConfig.init, string negotiatedSubprotocol = null) @safe {
         _stream = stream;
         _config = config;
         _connected = stream.connected;
         _closeSent = false;
         _closeReceived = false;
+        _subprotocol = negotiatedSubprotocol;
         _readBuffer = new ubyte[](4096);  // Initial read buffer
         _readBufferPos = 0;
+        
+        // Heartbeat initialization
+        _heartbeatActive = false;
+        _awaitingPong = false;
+        _pingSequence = 0;
+        _lastPongTime = MonoTime.currTime;
     }
 
     // ─────────────────────────────────────────────
@@ -198,6 +222,134 @@ class WebSocketConnection {
      */
     @property IWebSocketStream stream() @safe nothrow {
         return _stream;
+    }
+
+    /**
+     * Get the negotiated subprotocol.
+     *
+     * Returns the subprotocol agreed upon during the WebSocket handshake,
+     * or null if no subprotocol was negotiated.
+     *
+     * Example:
+     * ---
+     * auto ws = WebSocketClient.connectWithProtocols("ws://localhost/", ["graphql-ws", "json"]);
+     * if (ws.subprotocol == "graphql-ws") {
+     *     // Use GraphQL over WebSocket protocol
+     * }
+     * ---
+     */
+    @property string subprotocol() const @safe nothrow {
+        return _subprotocol;
+    }
+
+    // ─────────────────────────────────────────────
+    // Heartbeat Management
+    // ─────────────────────────────────────────────
+
+    /**
+     * Start automatic heartbeat (ping/pong) mechanism.
+     *
+     * When enabled, the connection will periodically send ping frames
+     * and monitor for pong responses. If a pong is not received within
+     * the configured timeout, the connection is considered dead and
+     * will be closed.
+     *
+     * The heartbeat interval and pong timeout are configured via
+     * WebSocketConfig.pingInterval and WebSocketConfig.pongTimeout.
+     *
+     * Example:
+     * ---
+     * auto config = WebSocketConfig();
+     * config.pingInterval = 30.seconds;
+     * config.pongTimeout = 10.seconds;
+     * 
+     * auto ws = new WebSocketConnection(stream, config);
+     * ws.startHeartbeat();
+     * 
+     * // ... use connection ...
+     * 
+     * ws.stopHeartbeat();
+     * ws.close();
+     * ---
+     *
+     * Note: Heartbeat requires a vibe.d event loop to be running.
+     */
+    void startHeartbeat() @trusted {
+        if (_heartbeatActive) return;  // Already running
+        if (_config.pingInterval == Duration.zero) return;  // Disabled
+        
+        _heartbeatActive = true;
+        _awaitingPong = false;
+        _lastPongTime = MonoTime.currTime;
+        
+        // Set up periodic timer
+        _heartbeatTimer = setTimer(_config.pingInterval, &heartbeatTick, true);
+    }
+
+    /**
+     * Stop automatic heartbeat mechanism.
+     *
+     * Stops sending periodic ping frames. Safe to call even if
+     * heartbeat was not started.
+     */
+    void stopHeartbeat() @trusted {
+        if (!_heartbeatActive) return;
+        
+        _heartbeatActive = false;
+        if (_heartbeatTimer !is Timer.init) {
+            _heartbeatTimer.stop();
+            _heartbeatTimer = Timer.init;
+        }
+    }
+
+    /**
+     * Check if heartbeat is currently active.
+     */
+    @property bool heartbeatActive() const @safe nothrow {
+        return _heartbeatActive;
+    }
+
+    /**
+     * Get time since last pong was received.
+     *
+     * Useful for monitoring connection health.
+     *
+     * Returns:
+     *   Duration since last pong, or Duration.zero if heartbeat not active
+     */
+    @property Duration timeSinceLastPong() const @safe nothrow {
+        if (!_heartbeatActive) return Duration.zero;
+        return MonoTime.currTime - _lastPongTime;
+    }
+
+    private void heartbeatTick() @trusted {
+        if (!_connected || _closeSent) {
+            stopHeartbeat();
+            return;
+        }
+        
+        // Check for pong timeout
+        if (_awaitingPong && _config.pongTimeout != Duration.zero) {
+            auto elapsed = MonoTime.currTime - _lastPongTime;
+            if (elapsed > _config.pongTimeout) {
+                // Pong timeout - connection is dead
+                stopHeartbeat();
+                close(CloseCode.AbnormalClosure, "Pong timeout");
+                return;
+            }
+        }
+        
+        // Send ping with sequence number
+        _pingSequence++;
+        try {
+            import std.bitmanip : nativeToBigEndian;
+            auto seqBytes = nativeToBigEndian(_pingSequence);
+            ping(seqBytes[]);
+            _awaitingPong = true;
+        } catch (Exception) {
+            // Send failed - connection is likely dead
+            stopHeartbeat();
+        }
     }
 
     // ─────────────────────────────────────────────
@@ -289,6 +441,9 @@ class WebSocketConnection {
      */
     void close(CloseCode code = CloseCode.Normal, string reason = "") @trusted {
         if (_closeSent) return;  // Already closing
+
+        // Stop heartbeat if active
+        stopHeartbeat();
 
         // Build close payload
         ubyte[] payload;
@@ -495,7 +650,9 @@ class WebSocketConnection {
                 return false;
 
             case Opcode.Pong:
-                // Could track ping/pong for latency measurement
+                // Track pong for heartbeat mechanism
+                _lastPongTime = MonoTime.currTime;
+                _awaitingPong = false;
                 return false;
 
             case Opcode.Close:
@@ -820,4 +977,127 @@ unittest {
     WebSocketConfig clientConfig;
     clientConfig.mode = ConnectionMode.client;
     assert(clientConfig.serverMode == false);
+}
+
+unittest {
+    // Test subprotocol negotiation: connection created with subprotocol
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    auto conn = new WebSocketConnection(stream, config, "graphql-ws");
+
+    assert(conn.subprotocol == "graphql-ws");
+}
+
+unittest {
+    // Test subprotocol negotiation: connection without subprotocol
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    auto conn = new WebSocketConnection(stream, config);
+
+    assert(conn.subprotocol is null);
+}
+
+unittest {
+    // Test subprotocol negotiation: empty subprotocol
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    auto conn = new WebSocketConnection(stream, config, "");
+
+    assert(conn.subprotocol == "");
+}
+
+unittest {
+    // Test WebSocketConfig.subprotocols field
+    WebSocketConfig config;
+    config.subprotocols = ["graphql-ws", "json", "xml"];
+    
+    assert(config.subprotocols.length == 3);
+    assert(config.subprotocols[0] == "graphql-ws");
+    assert(config.subprotocols[1] == "json");
+    assert(config.subprotocols[2] == "xml");
+}
+
+// ============================================================================
+// HEARTBEAT UNIT TESTS
+// ============================================================================
+
+unittest {
+    // Test heartbeat config defaults
+    WebSocketConfig config;
+    assert(config.pingInterval == Duration.zero);  // Disabled by default
+    assert(config.pongTimeout == 30.seconds);      // 30 second default timeout
+}
+
+unittest {
+    // Test heartbeat config custom values
+    WebSocketConfig config;
+    config.pingInterval = 15.seconds;
+    config.pongTimeout = 5.seconds;
+    
+    assert(config.pingInterval == 15.seconds);
+    assert(config.pongTimeout == 5.seconds);
+}
+
+unittest {
+    // Test heartbeat initial state
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.pingInterval = 10.seconds;
+    auto conn = new WebSocketConnection(stream, config);
+
+    assert(!conn.heartbeatActive);
+    assert(conn.timeSinceLastPong == Duration.zero);
+}
+
+unittest {
+    // Test startHeartbeat when pingInterval is zero (disabled)
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.pingInterval = Duration.zero;  // Disabled
+    auto conn = new WebSocketConnection(stream, config);
+
+    conn.startHeartbeat();
+    assert(!conn.heartbeatActive);  // Should not start
+}
+
+unittest {
+    // Test stopHeartbeat when not started (should be safe)
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    auto conn = new WebSocketConnection(stream, config);
+
+    conn.stopHeartbeat();  // Should not crash
+    assert(!conn.heartbeatActive);
+}
+
+unittest {
+    // Test pong response updates tracking
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.mode = ConnectionMode.server;
+    auto conn = new WebSocketConnection(stream, config);
+
+    // Simulate receiving a pong frame
+    Frame pongFrame;
+    pongFrame.fin = true;
+    pongFrame.opcode = Opcode.Pong;
+    pongFrame.masked = true;  // Client sends masked
+    pongFrame.maskKey = generateMaskKey();
+    pongFrame.payload = cast(ubyte[]) "pong".dup;
+
+    // Also need a regular message after pong
+    Frame textFrame;
+    textFrame.fin = true;
+    textFrame.opcode = Opcode.Text;
+    textFrame.masked = true;
+    textFrame.maskKey = generateMaskKey();
+    textFrame.payload = cast(ubyte[]) "test".dup;
+
+    stream.pushReadData(encodeFrame(pongFrame));
+    stream.pushReadData(encodeFrame(textFrame));
+
+    // Receive should process pong and return text
+    auto msg = conn.receive();
+    assert(msg.type == MessageType.Text);
+    assert(msg.text == "test");
 }
