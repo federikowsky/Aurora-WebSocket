@@ -79,7 +79,7 @@ public import websocket.protocol :
     WebSocketException,
     WebSocketProtocolException;
 
-// Handshake utilities
+// Handshake utilities (server mode)
 public import websocket.handshake :
     WS_MAGIC_GUID,
     WS_VERSION,
@@ -88,7 +88,12 @@ public import websocket.handshake :
     validateUpgradeRequest,
     buildUpgradeResponse,
     buildBadRequestResponse,
-    WebSocketHandshakeException;
+    WebSocketHandshakeException,
+    // Client mode
+    generateSecWebSocketKey,
+    buildUpgradeRequest,
+    ClientUpgradeValidation,
+    validateUpgradeResponse;
 
 // Stream abstraction
 public import websocket.stream :
@@ -100,9 +105,17 @@ public import websocket.stream :
 
 // Connection management
 public import websocket.connection :
+    ConnectionMode,
     WebSocketConfig,
     WebSocketConnection,
     WebSocketClosedException;
+
+// Client API
+public import websocket.client :
+    WebSocketUrl,
+    parseWebSocketUrl,
+    WebSocketClient,
+    WebSocketClientException;
 
 // ============================================================================
 // CONVENIENCE FUNCTIONS

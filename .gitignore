@@ -12,7 +12,7 @@ dub.selections.json
 *.lib
 *.dll
 *.exe
-websocket
+/websocket
 libwebsocket.a
 
 # D compiler artifacts
@@ -46,3 +46,6 @@ trace.def
 # Temporary files
 *.tmp
 *.bak
+
+# User-specific files
+plan.md

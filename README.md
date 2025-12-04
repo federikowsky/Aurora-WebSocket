@@ -8,6 +8,7 @@ RFC 6455 compliant WebSocket library for D. Standalone with optional Aurora fram
 
 - ✅ **RFC 6455 Compliant** - Full WebSocket protocol implementation
 - ✅ **Server Mode** - Accept WebSocket connections from clients
+- ✅ **Client Mode** - Connect to WebSocket servers
 - ✅ **Standalone** - Works with any stream (vibe-d, raw sockets, etc.)
 - ✅ **Aurora Integration** - Seamless integration with Aurora framework's `HijackedConnection`
 - ✅ **Simple API** - Clean, ergonomic interface for common use cases
@@ -26,7 +27,28 @@ Add to your `dub.json`:
 
 ## Quick Start
 
-### With Aurora Framework
+### Client Mode
+
+```d
+import websocket;
+
+void main() {
+    // Connect to a WebSocket server
+    auto ws = WebSocketClient.connect("ws://localhost:8080/chat");
+    scope(exit) ws.close();
+    
+    // Send a message
+    ws.send("Hello, server!");
+    
+    // Receive response
+    auto msg = ws.receive();
+    if (msg.type == MessageType.Text) {
+        writeln("Received: ", msg.text);
+    }
+}
+```
+
+### Server Mode - With Aurora Framework
 
 ```d
 import aurora;
@@ -69,7 +91,7 @@ void main() {
 }
 ```
 
-### Standalone with vibe-core
+### Server Mode - Standalone with vibe-core
 
 ```d
 import websocket;
@@ -148,15 +170,30 @@ class WebSocketConnection {
 ### Handshake Utilities
 
 ```d
-// Validate upgrade request
+// Validate upgrade request (server)
 auto validation = validateUpgradeRequest("GET", headers);
 if (!validation.valid) { /* error */ }
 
 // Compute Sec-WebSocket-Accept
 string acceptKey = computeAcceptKey(clientKey);
 
-// Build HTTP 101 response
+// Build HTTP 101 response (server)
 string response = buildUpgradeResponse(clientKey);
+```
+
+### WebSocket Client
+
+```d
+// Simple connection
+auto ws = WebSocketClient.connect("ws://localhost:8080/chat");
+
+// With custom headers
+string[string] headers;
+headers["Origin"] = "https://example.com";
+auto ws = WebSocketClient.connectWithHeaders(url, headers);
+
+// With subprotocols
+auto ws = WebSocketClient.connectWithProtocols(url, ["graphql-ws"]);
 ```
 
 ## Exception Hierarchy
@@ -176,8 +213,9 @@ WebSocketConfig config;
 config.maxFrameSize = 64 * 1024;      // 64KB
 config.maxMessageSize = 16 * 1024 * 1024;  // 16MB
 config.autoReplyPing = true;
+config.mode = ConnectionMode.server;   // or ConnectionMode.client
 
-auto ws = WebSocket.accept(stream, clientKey, config);
+auto ws = new WebSocketConnection(stream, config);
 ```
 
 ## License

@@ -71,6 +71,290 @@ enum WS_MAGIC_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 enum WS_VERSION = "13";
 
 // ============================================================================
+// CLIENT MODE - KEY GENERATION
+// ============================================================================
+
+/**
+ * Generate a random Sec-WebSocket-Key for client handshake.
+ *
+ * The key is 16 random bytes, Base64-encoded (24 characters).
+ * This is used when initiating a WebSocket connection as a client.
+ *
+ * Example:
+ * ---
+ * auto key = generateSecWebSocketKey();
+ * // key is something like "dGhlIHNhbXBsZSBub25jZQ=="
+ * ---
+ *
+ * Returns:
+ *   Base64-encoded 16-byte random key
+ */
+string generateSecWebSocketKey() @trusted {
+    import std.random : Random, unpredictableSeed, uniform;
+    
+    // Generate 16 random bytes
+    ubyte[16] randomBytes;
+    auto rng = Random(unpredictableSeed);
+    foreach (ref b; randomBytes) {
+        b = uniform!ubyte(rng);
+    }
+    
+    // Base64 encode
+    return Base64.encode(randomBytes[]);
+}
+
+// ============================================================================
+// CLIENT MODE - UPGRADE REQUEST
+// ============================================================================
+
+/**
+ * Build HTTP upgrade request for WebSocket client handshake.
+ *
+ * Example request:
+ * ---
+ * GET /chat HTTP/1.1
+ * Host: server.example.com
+ * Upgrade: websocket
+ * Connection: Upgrade
+ * Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+ * Sec-WebSocket-Version: 13
+ * ---
+ *
+ * Params:
+ *   host = Server hostname (for Host header)
+ *   path = Request path (e.g., "/chat" or "/")
+ *   key = Sec-WebSocket-Key (from generateSecWebSocketKey)
+ *   protocols = Optional subprotocols to request
+ *   extraHeaders = Optional additional headers (e.g., Origin, cookies)
+ *
+ * Returns:
+ *   Complete HTTP request string
+ */
+string buildUpgradeRequest(
+    string host,
+    string path,
+    string key,
+    string[] protocols = null,
+    string[string] extraHeaders = null
+) pure @safe {
+    import std.array : appender;
+    
+    // Ensure path starts with /
+    if (path.length == 0 || path[0] != '/') {
+        path = "/" ~ path;
+    }
+    
+    auto request = appender!string();
+    
+    // Request line
+    request ~= "GET ";
+    request ~= path;
+    request ~= " HTTP/1.1\r\n";
+    
+    // Required headers
+    request ~= "Host: ";
+    request ~= host;
+    request ~= "\r\n";
+    
+    request ~= "Upgrade: websocket\r\n";
+    request ~= "Connection: Upgrade\r\n";
+    
+    request ~= "Sec-WebSocket-Key: ";
+    request ~= key;
+    request ~= "\r\n";
+    
+    request ~= "Sec-WebSocket-Version: ";
+    request ~= WS_VERSION;
+    request ~= "\r\n";
+    
+    // Optional: subprotocols
+    if (protocols !is null && protocols.length > 0) {
+        request ~= "Sec-WebSocket-Protocol: ";
+        foreach (i, p; protocols) {
+            if (i > 0) request ~= ", ";
+            request ~= p;
+        }
+        request ~= "\r\n";
+    }
+    
+    // Extra headers
+    if (extraHeaders !is null) {
+        foreach (name, value; extraHeaders) {
+            request ~= name;
+            request ~= ": ";
+            request ~= value;
+            request ~= "\r\n";
+        }
+    }
+    
+    // End of headers
+    request ~= "\r\n";
+    
+    return request.data;
+}
+
+// ============================================================================
+// CLIENT MODE - RESPONSE VALIDATION
+// ============================================================================
+
+/**
+ * Result of validating server's upgrade response.
+ */
+struct ClientUpgradeValidation {
+    /// Whether the response is a valid WebSocket upgrade
+    bool valid;
+    
+    /// Error message if not valid
+    string error;
+    
+    /// HTTP status code from response
+    int statusCode;
+    
+    /// Selected subprotocol (if any)
+    string protocol;
+    
+    /// Selected extensions (if any)
+    string[] extensions;
+}
+
+/**
+ * Validate server's HTTP upgrade response for WebSocket client.
+ *
+ * Checks RFC 6455 Section 4.2.2 requirements:
+ * - Status code must be 101
+ * - Upgrade: websocket
+ * - Connection: Upgrade
+ * - Sec-WebSocket-Accept matches expected value
+ *
+ * Params:
+ *   response = Complete HTTP response string
+ *   expectedKey = The Sec-WebSocket-Key we sent (to verify accept)
+ *
+ * Returns:
+ *   ClientUpgradeValidation with validation result
+ */
+ClientUpgradeValidation validateUpgradeResponse(string response, string expectedKey) pure @safe {
+    import std.algorithm : findSplit, startsWith;
+    import std.conv : to, ConvException;
+    
+    ClientUpgradeValidation result;
+    result.valid = false;
+    
+    // Parse response into lines
+    string[string] headers;
+    string statusLine;
+    
+    auto remaining = response;
+    
+    // First line is status line
+    auto statusSplit = remaining.findSplit("\r\n");
+    if (statusSplit[1].length == 0) {
+        // Try with just \n
+        statusSplit = remaining.findSplit("\n");
+    }
+    statusLine = statusSplit[0];
+    remaining = statusSplit[2];
+    
+    // Parse status line: "HTTP/1.1 101 Switching Protocols"
+    if (!statusLine.startsWith("HTTP/1.1 ") && !statusLine.startsWith("HTTP/1.0 ")) {
+        result.error = "Invalid HTTP response";
+        return result;
+    }
+    
+    auto statusParts = statusLine[9 .. $].findSplit(" ");
+    try {
+        result.statusCode = statusParts[0].to!int;
+    } catch (ConvException) {
+        result.error = "Invalid status code";
+        return result;
+    }
+    
+    // Check status code
+    if (result.statusCode != 101) {
+        result.error = "Expected status 101, got " ~ result.statusCode.to!string;
+        return result;
+    }
+    
+    // Parse headers
+    while (remaining.length > 0) {
+        auto lineSplit = remaining.findSplit("\r\n");
+        if (lineSplit[1].length == 0) {
+            lineSplit = remaining.findSplit("\n");
+        }
+        
+        auto line = lineSplit[0];
+        remaining = lineSplit[2];
+        
+        // Empty line marks end of headers
+        if (line.length == 0) break;
+        
+        // Parse "Header-Name: value"
+        auto colonSplit = line.findSplit(":");
+        if (colonSplit[1].length == 0) continue;  // Malformed header
+        
+        auto headerName = colonSplit[0].strip().toLower();
+        auto headerValue = colonSplit[2].strip();
+        headers[headerName] = headerValue;
+    }
+    
+    // Check Upgrade header
+    auto upgradeHeader = "upgrade" in headers;
+    if (upgradeHeader is null || (*upgradeHeader).toLower() != "websocket") {
+        result.error = "Missing or invalid Upgrade header";
+        return result;
+    }
+    
+    // Check Connection header
+    auto connectionHeader = "connection" in headers;
+    if (connectionHeader is null) {
+        result.error = "Missing Connection header";
+        return result;
+    }
+    bool hasUpgrade = false;
+    foreach (part; (*connectionHeader).splitter(',')) {
+        if (part.strip().toLower() == "upgrade") {
+            hasUpgrade = true;
+            break;
+        }
+    }
+    if (!hasUpgrade) {
+        result.error = "Connection header must contain 'Upgrade'";
+        return result;
+    }
+    
+    // Check Sec-WebSocket-Accept
+    auto acceptHeader = "sec-websocket-accept" in headers;
+    if (acceptHeader is null) {
+        result.error = "Missing Sec-WebSocket-Accept header";
+        return result;
+    }
+    
+    auto expectedAccept = computeAcceptKey(expectedKey);
+    if (*acceptHeader != expectedAccept) {
+        result.error = "Sec-WebSocket-Accept mismatch";
+        return result;
+    }
+    
+    // Extract optional subprotocol
+    auto protocolHeader = "sec-websocket-protocol" in headers;
+    if (protocolHeader !is null) {
+        result.protocol = *protocolHeader;
+    }
+    
+    // Extract optional extensions
+    auto extensionsHeader = "sec-websocket-extensions" in headers;
+    if (extensionsHeader !is null) {
+        result.extensions = (*extensionsHeader)
+            .splitter(',')
+            .map!(e => e.strip())
+            .array();
+    }
+    
+    result.valid = true;
+    return result;
+}
+
+// ============================================================================
 // ACCEPT KEY COMPUTATION
 // ============================================================================
 
@@ -433,4 +717,132 @@ unittest {
                                          ["permessage-deflate", "x-custom"]);
 
     assert(response.canFind("Sec-WebSocket-Extensions: permessage-deflate, x-custom"));
+}
+
+// ============================================================================
+// CLIENT MODE UNIT TESTS
+// ============================================================================
+
+unittest {
+    // generateSecWebSocketKey produces valid base64 key
+    auto key = generateSecWebSocketKey();
+    assert(key.length == 24, "Key should be 24 chars (16 bytes base64)");
+    
+    // Verify it's valid base64 by decoding
+    auto decoded = Base64.decode(key);
+    assert(decoded.length == 16, "Decoded key should be 16 bytes");
+}
+
+unittest {
+    // generateSecWebSocketKey produces different keys
+    auto key1 = generateSecWebSocketKey();
+    auto key2 = generateSecWebSocketKey();
+    assert(key1 != key2, "Keys should be random and different");
+}
+
+unittest {
+    // buildUpgradeRequest basic
+    auto request = buildUpgradeRequest("example.com", "/chat", "dGhlIHNhbXBsZSBub25jZQ==");
+    
+    assert(request.canFind("GET /chat HTTP/1.1"));
+    assert(request.canFind("Host: example.com"));
+    assert(request.canFind("Upgrade: websocket"));
+    assert(request.canFind("Connection: Upgrade"));
+    assert(request.canFind("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="));
+    assert(request.canFind("Sec-WebSocket-Version: 13"));
+    assert(request[$-4 .. $] == "\r\n\r\n");  // Ends with double CRLF
+}
+
+unittest {
+    // buildUpgradeRequest with empty path defaults to /
+    auto request = buildUpgradeRequest("example.com", "", "testkey=============");
+    assert(request.canFind("GET / HTTP/1.1"));
+}
+
+unittest {
+    // buildUpgradeRequest with subprotocols
+    auto request = buildUpgradeRequest("example.com", "/", "testkey=============",
+                                       ["graphql-ws", "subscriptions-transport-ws"]);
+    assert(request.canFind("Sec-WebSocket-Protocol: graphql-ws, subscriptions-transport-ws"));
+}
+
+unittest {
+    // buildUpgradeRequest with extra headers
+    string[string] extra;
+    extra["Origin"] = "https://example.com";
+    extra["Cookie"] = "session=abc123";
+    
+    auto request = buildUpgradeRequest("example.com", "/", "testkey=============", null, extra);
+    assert(request.canFind("Origin: https://example.com"));
+    assert(request.canFind("Cookie: session=abc123"));
+}
+
+unittest {
+    // validateUpgradeResponse valid response
+    auto response = 
+        "HTTP/1.1 101 Switching Protocols\r\n" ~
+        "Upgrade: websocket\r\n" ~
+        "Connection: Upgrade\r\n" ~
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" ~
+        "\r\n";
+    
+    auto result = validateUpgradeResponse(response, "dGhlIHNhbXBsZSBub25jZQ==");
+    assert(result.valid, result.error);
+    assert(result.statusCode == 101);
+}
+
+unittest {
+    // validateUpgradeResponse wrong status code
+    auto response = 
+        "HTTP/1.1 200 OK\r\n" ~
+        "Content-Type: text/html\r\n" ~
+        "\r\n";
+    
+    auto result = validateUpgradeResponse(response, "dGhlIHNhbXBsZSBub25jZQ==");
+    assert(!result.valid);
+    assert(result.statusCode == 200);
+}
+
+unittest {
+    // validateUpgradeResponse wrong accept key
+    auto response = 
+        "HTTP/1.1 101 Switching Protocols\r\n" ~
+        "Upgrade: websocket\r\n" ~
+        "Connection: Upgrade\r\n" ~
+        "Sec-WebSocket-Accept: WRONG_KEY_HERE\r\n" ~
+        "\r\n";
+    
+    auto result = validateUpgradeResponse(response, "dGhlIHNhbXBsZSBub25jZQ==");
+    assert(!result.valid);
+    assert(result.error == "Sec-WebSocket-Accept mismatch");
+}
+
+unittest {
+    // validateUpgradeResponse with subprotocol
+    auto response = 
+        "HTTP/1.1 101 Switching Protocols\r\n" ~
+        "Upgrade: websocket\r\n" ~
+        "Connection: Upgrade\r\n" ~
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" ~
+        "Sec-WebSocket-Protocol: graphql-ws\r\n" ~
+        "\r\n";
+    
+    auto result = validateUpgradeResponse(response, "dGhlIHNhbXBsZSBub25jZQ==");
+    assert(result.valid, result.error);
+    assert(result.protocol == "graphql-ws");
+}
+
+unittest {
+    // validateUpgradeResponse with extensions
+    auto response = 
+        "HTTP/1.1 101 Switching Protocols\r\n" ~
+        "Upgrade: websocket\r\n" ~
+        "Connection: Upgrade\r\n" ~
+        "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n" ~
+        "Sec-WebSocket-Extensions: permessage-deflate\r\n" ~
+        "\r\n";
+    
+    auto result = validateUpgradeResponse(response, "dGhlIHNhbXBsZSBub25jZQ==");
+    assert(result.valid, result.error);
+    assert(result.extensions == ["permessage-deflate"]);
 }

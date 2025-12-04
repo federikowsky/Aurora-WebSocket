@@ -84,6 +84,20 @@ class WebSocketClosedException : WebSocketException {
 // ============================================================================
 
 /**
+ * Connection mode for WebSocket.
+ *
+ * Determines masking behavior:
+ * - Server mode: send unmasked, receive masked
+ * - Client mode: send masked, receive unmasked
+ */
+enum ConnectionMode {
+    /// Server mode (default): expect masked frames, send unmasked
+    server,
+    /// Client mode: expect unmasked frames, send masked
+    client
+}
+
+/**
  * Configuration options for WebSocket connections.
  */
 struct WebSocketConfig {
@@ -102,8 +116,13 @@ struct WebSocketConfig {
     /// Automatically reply to ping frames with matching pong
     bool autoReplyPing = true;
 
-    /// Automatically unmask incoming frames (server mode)
-    bool serverMode = true;
+    /// Connection mode: server (default) or client
+    ConnectionMode mode = ConnectionMode.server;
+    
+    /// Helper property for backward compatibility and internal use
+    @property bool serverMode() const pure @safe nothrow {
+        return mode == ConnectionMode.server;
+    }
 }
 
 // ============================================================================
@@ -606,7 +625,7 @@ unittest {
     // Test send text creates proper frame
     auto stream = new MockWebSocketStream();
     auto config = WebSocketConfig();
-    config.serverMode = true;  // Server doesn't mask outgoing
+    config.mode = ConnectionMode.server;  // Server doesn't mask outgoing
     auto conn = new WebSocketConnection(stream, config);
 
     conn.send("Hello");
@@ -626,7 +645,7 @@ unittest {
     // Test send binary creates proper frame
     auto stream = new MockWebSocketStream();
     auto config = WebSocketConfig();
-    config.serverMode = true;
+    config.mode = ConnectionMode.server;
     auto conn = new WebSocketConnection(stream, config);
 
     ubyte[] data = [0x01, 0x02, 0x03];
@@ -643,7 +662,7 @@ unittest {
     // Test ping creates proper frame
     auto stream = new MockWebSocketStream();
     auto config = WebSocketConfig();
-    config.serverMode = true;
+    config.mode = ConnectionMode.server;
     auto conn = new WebSocketConnection(stream, config);
 
     conn.ping(cast(ubyte[]) "ping");
@@ -659,7 +678,7 @@ unittest {
     // Test close with code and reason
     auto stream = new MockWebSocketStream();
     auto config = WebSocketConfig();
-    config.serverMode = true;
+    config.mode = ConnectionMode.server;
     auto conn = new WebSocketConnection(stream, config);
 
     // Push a close frame response so close() completes
@@ -692,7 +711,7 @@ unittest {
     // Test receive simple text message
     auto stream = new MockWebSocketStream();
     auto config = WebSocketConfig();
-    config.serverMode = true;
+    config.mode = ConnectionMode.server;
     auto conn = new WebSocketConnection(stream, config);
 
     // Create a masked text frame (client → server)
@@ -714,7 +733,7 @@ unittest {
     // Test auto-reply to ping
     auto stream = new MockWebSocketStream();
     auto config = WebSocketConfig();
-    config.serverMode = true;
+    config.mode = ConnectionMode.server;
     config.autoReplyPing = true;
     auto conn = new WebSocketConnection(stream, config);
 
@@ -747,4 +766,58 @@ unittest {
     assert(result.success);
     assert(result.frame.opcode == Opcode.Pong);
     assert(result.frame.payload == cast(ubyte[]) "ping");
+}
+
+unittest {
+    // Test client mode: sends masked frames
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.mode = ConnectionMode.client;  // Client mode
+    auto conn = new WebSocketConnection(stream, config);
+
+    conn.send("Hello from client");
+
+    auto written = stream.writtenData;
+    assert(written.length > 0);
+
+    // Client sends masked frames
+    auto result = decodeFrame(written, false);  // Don't require masked for decode
+    assert(result.success);
+    assert(result.frame.opcode == Opcode.Text);
+    assert(result.frame.masked == true, "Client mode should send masked frames");
+    assert(result.frame.payload == cast(ubyte[]) "Hello from client");
+}
+
+unittest {
+    // Test client mode: receives unmasked frames from server
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.mode = ConnectionMode.client;
+    auto conn = new WebSocketConnection(stream, config);
+
+    // Server sends unmasked frame
+    Frame serverFrame;
+    serverFrame.fin = true;
+    serverFrame.opcode = Opcode.Text;
+    serverFrame.masked = false;  // Server doesn't mask
+    serverFrame.payload = cast(ubyte[]) "Hello from server".dup;
+
+    stream.pushReadData(encodeFrame(serverFrame));
+
+    auto msg = conn.receive();
+    assert(msg.type == MessageType.Text);
+    assert(msg.text == "Hello from server");
+}
+
+unittest {
+    // Test ConnectionMode enum
+    assert(ConnectionMode.server != ConnectionMode.client);
+    
+    WebSocketConfig serverConfig;
+    serverConfig.mode = ConnectionMode.server;
+    assert(serverConfig.serverMode == true);
+    
+    WebSocketConfig clientConfig;
+    clientConfig.mode = ConnectionMode.client;
+    assert(clientConfig.serverMode == false);
 }
