@@ -1,0 +1,28 @@
+{
+    "name": "websocket",
+    "description": "RFC 6455 WebSocket library for D - standalone with Aurora framework integration",
+    "authors": ["Aurora Framework"],
+    "license": "MIT",
+    "version": "1.0.0-alpha",
+
+    "sourcePaths": ["source"],
+    "importPaths": ["source"],
+
+    "dependencies": {
+        "vibe-core": ">=2.0.0"
+    },
+
+    "configurations": [
+        {
+            "name": "library",
+            "targetType": "library"
+        },
+        {
+            "name": "unittest",
+            "targetType": "executable",
+            "sourcePaths": ["source", "tests"],
+            "importPaths": ["source", "tests"],
+            "mainSourceFile": "tests/runner.d"
+        }
+    ]
+}
