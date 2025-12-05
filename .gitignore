@@ -1,0 +1,53 @@
+# Aurora-WebSocket .gitignore
+
+# DUB build artifacts
+.dub/
+dub.selections.json
+
+# Compiled libraries and executables
+*.a
+*.o
+*.so
+*.dylib
+*.lib
+*.dll
+*.exe
+/websocket
+libwebsocket.a
+
+# D compiler artifacts
+*.di
+
+# Documentation output (generated HTML, not specs.md)
+*.html
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test artifacts
+*.log
+test-results/
+
+# Coverage reports
+*.lst
+-cov/
+
+# Profiling data
+*.prof
+trace.log
+trace.def
+
+# Temporary files
+*.tmp
+*.bak
+
+# User-specific files
+plan.md
+
+# Autobahn test suite
+tests/autobahn

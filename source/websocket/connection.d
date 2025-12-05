@@ -1,0 +1,965 @@
+/**
+ * WebSocket Connection - High-level Connection Management
+ *
+ * This module provides the main user-facing API for WebSocket communication:
+ * - WebSocketConnection class for server-side connections
+ * - Message sending (text, binary, ping, pong, close)
+ * - Message receiving with automatic fragment reassembly
+ * - Automatic ping/pong handling
+ * - Clean close handshake
+ *
+ * Example:
+ * ---
+ * // In an Aurora handler
+ * void handleWebSocket(Request req, HijackedConnection conn) {
+ *     auto stream = new VibeTCPAdapter(conn.tcpConnection);
+ *     auto validation = validateUpgradeRequest(req.method, req.headers);
+ *
+ *     if (!validation.valid) {
+ *         conn.write(buildBadRequestResponse(validation.error));
+ *         return;
+ *     }
+ *
+ *     conn.write(buildUpgradeResponse(validation.clientKey));
+ *
+ *     auto ws = new WebSocketConnection(stream);
+ *     scope(exit) ws.close();
+ *
+ *     while (ws.connected) {
+ *         auto msg = ws.receive();
+ *         if (msg.type == MessageType.Text) {
+ *             ws.send("Echo: " ~ msg.text);
+ *         }
+ *     }
+ * }
+ * ---
+ *
+ * Authors: Aurora WebSocket Contributors
+ * License: MIT
+ * Standards: RFC 6455
+ */
+module websocket.connection;
+
+import core.time : Duration, seconds, MonoTime;
+
+import websocket.message;
+import websocket.protocol;
+import websocket.stream;
+
+// ============================================================================
+// EXCEPTIONS
+// ============================================================================
+
+/**
+ * Exception thrown when operating on a closed WebSocket connection.
+ */
+class WebSocketClosedException : WebSocketException {
+    /// Close code from the close frame
+    CloseCode code;
+
+    /// Close reason from the close frame
+    string reason;
+
+    @safe pure nothrow this(
+        CloseCode code,
+        string reason,
+        string file = __FILE__,
+        size_t line = __LINE__
+    ) {
+        this.code = code;
+        this.reason = reason;
+        super("WebSocket connection closed: " ~ reasonText(code, reason), file, line);
+    }
+
+    private static string reasonText(CloseCode code, string reason) pure nothrow @safe {
+        import std.conv : to;
+        if (reason.length > 0)
+            return reason;
+        return "code " ~ (cast(int) code).to!string;
+    }
+}
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+/**
+ * Connection mode for WebSocket.
+ *
+ * Determines masking behavior:
+ * - Server mode: send unmasked, receive masked
+ * - Client mode: send masked, receive unmasked
+ */
+enum ConnectionMode {
+    /// Server mode (default): expect masked frames, send unmasked
+    server,
+    /// Client mode: expect unmasked frames, send masked
+    client
+}
+
+/**
+ * Configuration options for WebSocket connections.
+ */
+struct WebSocketConfig {
+    /// Maximum size of a single frame payload (default: 64KB)
+    size_t maxFrameSize = 64 * 1024;
+
+    /// Maximum size of a reassembled message (default: 16MB)
+    size_t maxMessageSize = 16 * 1024 * 1024;
+
+    /// Timeout for read operations (0 = no timeout)
+    Duration readTimeout = Duration.zero;
+
+    /// Automatically reply to ping frames with matching pong
+    bool autoReplyPing = true;
+
+    /// Connection mode: server (default) or client
+    ConnectionMode mode = ConnectionMode.server;
+    
+    /// Subprotocols supported (server) or requested (client)
+    string[] subprotocols;
+    
+    /// Helper property for backward compatibility and internal use
+    @property bool serverMode() const pure @safe nothrow {
+        return mode == ConnectionMode.server;
+    }
+}
+
+// ============================================================================
+// CONNECTION CLASS
+// ============================================================================
+
+/**
+ * A WebSocket connection.
+ *
+ * This class manages a single WebSocket connection, providing high-level
+ * methods for sending and receiving messages. It handles:
+ *
+ * - Frame encoding/decoding
+ * - Message fragmentation/reassembly
+ * - Automatic ping/pong responses
+ * - Close handshake
+ *
+ * Thread Safety: NOT thread-safe. Use external synchronization if
+ * accessing from multiple threads, or use one connection per thread.
+ */
+class WebSocketConnection {
+    private IWebSocketStream _stream;
+    private WebSocketConfig _config;
+    private bool _connected;
+    private bool _closeSent;
+    private bool _closeReceived;
+    private string _subprotocol;  // Negotiated subprotocol (null if none)
+
+    // Fragment reassembly state
+    private Opcode _fragmentOpcode;
+    private ubyte[] _fragmentBuffer;
+
+    // Read buffer for streaming frame reads
+    private ubyte[] _readBuffer;
+    private size_t _readBufferPos;
+
+    // Heartbeat tracking (manual - no timer)
+    private MonoTime _lastPongTime;
+    private bool _awaitingPong;
+    private uint _pingSequence;  // Sequence number for ping payloads
+
+    /**
+     * Create a WebSocket connection from a stream.
+     *
+     * The stream should already be connected and the HTTP upgrade
+     * handshake should already be complete.
+     *
+     * Params:
+     *   stream = Connected stream (e.g., VibeTCPAdapter)
+     *   config = Connection configuration
+     *   negotiatedSubprotocol = Subprotocol agreed during handshake (null if none)
+     */
+    this(IWebSocketStream stream, WebSocketConfig config = WebSocketConfig.init, string negotiatedSubprotocol = null) @safe {
+        _stream = stream;
+        _config = config;
+        _connected = stream.connected;
+        _closeSent = false;
+        _closeReceived = false;
+        _subprotocol = negotiatedSubprotocol;
+        _readBuffer = new ubyte[](4096);  // Initial read buffer
+        _readBufferPos = 0;
+        
+        // Heartbeat initialization
+        _awaitingPong = false;
+        _pingSequence = 0;
+        _lastPongTime = MonoTime.currTime;
+    }
+
+    // ─────────────────────────────────────────────
+    // Connection State
+    // ─────────────────────────────────────────────
+
+    /**
+     * Check if the connection is still open.
+     *
+     * Returns false after close handshake completes or on error.
+     */
+    @property bool connected() @safe nothrow {
+        return _connected && !_closeReceived && _stream.connected;
+    }
+
+    /**
+     * Get the underlying stream.
+     *
+     * For advanced use cases only.
+     */
+    @property IWebSocketStream stream() @safe nothrow {
+        return _stream;
+    }
+
+    /**
+     * Get the negotiated subprotocol.
+     *
+     * Returns the subprotocol agreed upon during the WebSocket handshake,
+     * or null if no subprotocol was negotiated.
+     *
+     * Example:
+     * ---
+     * auto ws = WebSocketClient.connectWithProtocols("ws://localhost/", ["graphql-ws", "json"]);
+     * if (ws.subprotocol == "graphql-ws") {
+     *     // Use GraphQL over WebSocket protocol
+     * }
+     * ---
+     */
+    @property string subprotocol() const @safe nothrow {
+        return _subprotocol;
+    }
+
+    // ─────────────────────────────────────────────
+    // Heartbeat Management (Manual)
+    // ─────────────────────────────────────────────
+
+    /**
+     * Check if we're waiting for a pong response.
+     *
+     * Useful for implementing your own heartbeat mechanism.
+     */
+    @property bool awaitingPong() const @safe nothrow {
+        return _awaitingPong;
+    }
+
+    /**
+     * Get time since last pong was received.
+     *
+     * Useful for monitoring connection health and implementing
+     * your own heartbeat timeout logic.
+     *
+     * Returns:
+     *   Duration since last pong was received
+     */
+    @property Duration timeSinceLastPong() const @safe nothrow {
+        return MonoTime.currTime - _lastPongTime;
+    }
+
+    /**
+     * Reset pong tracking.
+     *
+     * Call this after receiving a pong or when starting fresh.
+     */
+    void resetPongTracking() @safe nothrow {
+        _lastPongTime = MonoTime.currTime;
+        _awaitingPong = false;
+    }
+
+    // ─────────────────────────────────────────────
+    // Sending Messages
+    // ─────────────────────────────────────────────
+
+    /**
+     * Send a text message.
+     *
+     * Params:
+     *   text = UTF-8 text to send
+     *
+     * Throws:
+     *   WebSocketClosedException if connection is closed
+     *   WebSocketStreamException on I/O error
+     */
+    void send(string text) @safe {
+        sendMessage(MessageType.Text, cast(const(ubyte)[]) text);
+    }
+
+    /**
+     * Send a binary message.
+     *
+     * Params:
+     *   data = Binary data to send
+     *
+     * Throws:
+     *   WebSocketClosedException if connection is closed
+     *   WebSocketStreamException on I/O error
+     */
+    void send(const(ubyte)[] data) @safe {
+        sendMessage(MessageType.Binary, data);
+    }
+
+    /**
+     * Send a ping frame.
+     *
+     * The remote end should respond with a pong containing the same payload.
+     * Use this for implementing keep-alive/heartbeat mechanisms.
+     *
+     * Params:
+     *   data = Optional payload (max 125 bytes)
+     *
+     * Throws:
+     *   WebSocketProtocolException if payload > 125 bytes
+     */
+    void ping(const(ubyte)[] data = null) @safe {
+        enforceConnected();
+
+        Frame frame;
+        frame.fin = true;
+        frame.opcode = Opcode.Ping;
+        frame.masked = !_config.serverMode;
+        if (frame.masked) frame.maskKey = generateMaskKey();
+        frame.payload = data.dup;
+
+        sendFrameInternal(frame);
+        _awaitingPong = true;
+        _pingSequence++;
+    }
+
+    /**
+     * Send a pong frame.
+     *
+     * Usually sent automatically in response to ping (if autoReplyPing is true).
+     *
+     * Params:
+     *   data = Payload (should match received ping)
+     */
+    void pong(const(ubyte)[] data = null) @safe {
+        enforceConnected();
+
+        Frame frame;
+        frame.fin = true;
+        frame.opcode = Opcode.Pong;
+        frame.masked = !_config.serverMode;
+        if (frame.masked) frame.maskKey = generateMaskKey();
+        frame.payload = data.dup;
+
+        sendFrameInternal(frame);
+    }
+
+    /**
+     * Initiate connection close.
+     *
+     * Sends a close frame and waits for the close response.
+     * After this method returns, connected() will be false.
+     *
+     * Params:
+     *   code = Close status code
+     *   reason = Optional close reason (max ~123 bytes)
+     */
+    void close(CloseCode code = CloseCode.Normal, string reason = "") @trusted {
+        if (_closeSent) return;  // Already closing
+
+        // Build close payload
+        ubyte[] payload;
+        if (code != CloseCode.NoStatus) {
+            payload = new ubyte[](2 + reason.length);
+            payload[0] = cast(ubyte)(code >> 8);
+            payload[1] = cast(ubyte)(code & 0xFF);
+            if (reason.length > 0) {
+                payload[2 .. $] = cast(ubyte[]) reason;
+            }
+        }
+
+        // Send close frame
+        Frame frame;
+        frame.fin = true;
+        frame.opcode = Opcode.Close;
+        frame.masked = !_config.serverMode;
+        if (frame.masked) frame.maskKey = generateMaskKey();
+        frame.payload = payload;
+
+        try {
+            sendFrameInternal(frame);
+            _closeSent = true;
+
+            // Wait for close response (with timeout)
+            if (!_closeReceived) {
+                waitForCloseResponse();
+            }
+        } catch (Exception) {
+            // Ignore errors during close
+        }
+
+        _connected = false;
+        _stream.close();
+    }
+
+    // ─────────────────────────────────────────────
+    // Receiving Messages
+    // ─────────────────────────────────────────────
+
+    /**
+     * Receive the next message (blocking).
+     *
+     * Blocks until a complete message is received or the connection closes.
+     * Handles:
+     * - Fragment reassembly (multiple frames → single message)
+     * - Automatic pong response to ping (if autoReplyPing is true)
+     * - Close handshake
+     *
+     * Returns:
+     *   The received message
+     *
+     * Throws:
+     *   WebSocketClosedException if connection closed
+     *   WebSocketProtocolException on protocol error
+     *   WebSocketStreamException on I/O error
+     */
+    Message receive() @safe {
+        enforceConnected();
+
+        while (true) {
+            auto frame = receiveFrame();
+
+            // Handle control frames
+            if (isControlOpcode(frame.opcode)) {
+                if (handleControlFrame(frame)) {
+                    // Close frame received
+                    throw new WebSocketClosedException(
+                        parseCloseCode(frame.payload),
+                        parseCloseReason(frame.payload)
+                    );
+                }
+                continue;  // Control frames don't produce messages
+            }
+
+            // Handle data frames
+            return handleDataFrame(frame);
+        }
+    }
+
+    /**
+     * Receive the next frame (low-level).
+     *
+     * For advanced use cases. Most users should use receive().
+     *
+     * Returns:
+     *   The received frame
+     *
+     * Throws:
+     *   WebSocketStreamException on I/O error
+     *   WebSocketProtocolException on invalid frame
+     */
+    Frame receiveFrame() @safe {
+        enforceConnected();
+
+        // Read frame from stream
+        // First, read minimum header (2 bytes)
+        auto header = _stream.readExactly(2);
+
+        // Parse initial header to determine full header size
+        bool masked = (header[1] & 0x80) != 0;
+        ubyte lenByte = header[1] & 0x7F;
+
+        size_t extendedLen = 0;
+        if (lenByte == 126) {
+            extendedLen = 2;
+        } else if (lenByte == 127) {
+            extendedLen = 8;
+        }
+
+        size_t maskKeyLen = masked ? 4 : 0;
+
+        // Read extended header if needed
+        ubyte[] extHeader;
+        if (extendedLen + maskKeyLen > 0) {
+            extHeader = _stream.readExactly(extendedLen + maskKeyLen);
+        }
+
+        // Calculate payload length
+        size_t payloadLen;
+        if (lenByte <= 125) {
+            payloadLen = lenByte;
+        } else if (lenByte == 126) {
+            payloadLen = (cast(size_t) extHeader[0] << 8) | extHeader[1];
+        } else {
+            payloadLen = 0;
+            foreach (i; 0 .. 8) {
+                payloadLen = (payloadLen << 8) | extHeader[i];
+            }
+        }
+
+        // Enforce size limits
+        if (payloadLen > _config.maxFrameSize) {
+            throw new WebSocketProtocolException("Frame payload too large");
+        }
+
+        // Read payload
+        ubyte[] payload;
+        if (payloadLen > 0) {
+            payload = _stream.readExactly(payloadLen);
+        }
+
+        // Build complete frame data for decoding
+        auto frameData = new ubyte[](2 + extendedLen + maskKeyLen + payloadLen);
+        frameData[0 .. 2] = header[];
+        if (extHeader.length > 0) {
+            frameData[2 .. 2 + extHeader.length] = extHeader[];
+        }
+        if (payload.length > 0) {
+            frameData[2 + extendedLen + maskKeyLen .. $] = payload[];
+        }
+
+        // Decode frame
+        auto result = decodeFrame(frameData, _config.serverMode);
+        if (!result.success) {
+            throw new WebSocketProtocolException("Incomplete frame");
+        }
+
+        return result.frame;
+    }
+
+    // ─────────────────────────────────────────────
+    // Private Implementation
+    // ─────────────────────────────────────────────
+
+    private void enforceConnected() @safe {
+        if (!connected) {
+            throw new WebSocketClosedException(CloseCode.AbnormalClosure, "Connection closed");
+        }
+    }
+
+    private void sendMessage(MessageType type, const(ubyte)[] data) @safe {
+        enforceConnected();
+
+        // For now, send as single frame (no fragmentation)
+        // TODO: Implement fragmentation for large messages
+        Frame frame;
+        frame.fin = true;
+        frame.opcode = (type == MessageType.Text) ? Opcode.Text : Opcode.Binary;
+        frame.masked = !_config.serverMode;
+        if (frame.masked) frame.maskKey = generateMaskKey();
+        frame.payload = data.dup;
+
+        sendFrameInternal(frame);
+    }
+
+    private void sendFrameInternal(Frame frame) @safe {
+        auto encoded = encodeFrame(frame);
+        _stream.write(encoded);
+        _stream.flush();
+    }
+
+    /**
+     * Handle a control frame.
+     *
+     * Returns: true if Close frame was received
+     */
+    private bool handleControlFrame(Frame frame) @safe {
+        switch (frame.opcode) {
+            case Opcode.Ping:
+                if (_config.autoReplyPing) {
+                    pong(frame.payload);
+                }
+                return false;
+
+            case Opcode.Pong:
+                // Track pong for heartbeat mechanism
+                _lastPongTime = MonoTime.currTime;
+                _awaitingPong = false;
+                return false;
+
+            case Opcode.Close:
+                _closeReceived = true;
+
+                // If we haven't sent close yet, echo it back
+                if (!_closeSent) {
+                    Frame closeFrame;
+                    closeFrame.fin = true;
+                    closeFrame.opcode = Opcode.Close;
+                    closeFrame.masked = !_config.serverMode;
+                    if (closeFrame.masked) closeFrame.maskKey = generateMaskKey();
+                    closeFrame.payload = frame.payload.dup;
+
+                    try {
+                        sendFrameInternal(closeFrame);
+                    } catch (Exception) {
+                        // Ignore errors during close response
+                    }
+                    _closeSent = true;
+                }
+
+                _connected = false;
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Handle a data frame, performing fragment reassembly.
+     *
+     * Returns: Complete message, or continues waiting for more fragments
+     */
+    private Message handleDataFrame(Frame frame) @safe {
+        // Check for message size limits
+        if (_fragmentBuffer.length + frame.payload.length > _config.maxMessageSize) {
+            throw new WebSocketProtocolException("Message too large");
+        }
+
+        if (frame.opcode == Opcode.Continuation) {
+            // Continuation frame - append to buffer
+            if (_fragmentBuffer.length == 0) {
+                throw new WebSocketProtocolException("Unexpected continuation frame");
+            }
+            _fragmentBuffer ~= frame.payload;
+        } else {
+            // New message (Text or Binary)
+            if (_fragmentBuffer.length > 0) {
+                throw new WebSocketProtocolException("Expected continuation frame");
+            }
+            _fragmentOpcode = frame.opcode;
+            _fragmentBuffer = frame.payload.dup;
+        }
+
+        // Check if message is complete
+        if (frame.fin) {
+            auto msgType = (_fragmentOpcode == Opcode.Text)
+                ? MessageType.Text
+                : MessageType.Binary;
+
+            auto msg = Message(msgType, _fragmentBuffer);
+
+            // Reset fragment state
+            _fragmentBuffer = null;
+            _fragmentOpcode = Opcode.Continuation;
+
+            return msg;
+        }
+
+        // Need more fragments - recurse
+        return receive();
+    }
+
+    private void waitForCloseResponse() @safe {
+        // Simple timeout-based wait for close response
+        // In production, this should use proper timeout handling
+        try {
+            for (int i = 0; i < 100 && !_closeReceived; i++) {
+                auto frame = receiveFrame();
+                if (frame.opcode == Opcode.Close) {
+                    _closeReceived = true;
+                    break;
+                }
+            }
+        } catch (Exception) {
+            // Timeout or error - just close
+        }
+    }
+
+    private static CloseCode parseCloseCode(const(ubyte)[] payload) pure nothrow @safe @nogc {
+        if (payload.length < 2) return CloseCode.NoStatus;
+        ushort code = (cast(ushort) payload[0] << 8) | payload[1];
+        return cast(CloseCode) code;
+    }
+
+    private static string parseCloseReason(const(ubyte)[] payload) pure nothrow @trusted {
+        if (payload.length <= 2) return "";
+        return cast(string) payload[2 .. $];
+    }
+}
+
+// ============================================================================
+// UNIT TESTS
+// ============================================================================
+
+unittest {
+    // Test WebSocketConfig defaults
+    WebSocketConfig config;
+    assert(config.maxFrameSize == 64 * 1024);
+    assert(config.maxMessageSize == 16 * 1024 * 1024);
+    assert(config.autoReplyPing == true);
+    assert(config.serverMode == true);
+}
+
+unittest {
+    // Test connection creation with mock stream
+    auto stream = new MockWebSocketStream();
+    auto conn = new WebSocketConnection(stream);
+
+    assert(conn.connected);
+    assert(conn.stream is stream);
+}
+
+unittest {
+    // Test send text creates proper frame
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.mode = ConnectionMode.server;  // Server doesn't mask outgoing
+    auto conn = new WebSocketConnection(stream, config);
+
+    conn.send("Hello");
+
+    auto written = stream.writtenData;
+    assert(written.length > 0);
+
+    // Decode the frame we sent
+    auto result = decodeFrame(written, false);  // Server sends unmasked
+    assert(result.success);
+    assert(result.frame.opcode == Opcode.Text);
+    assert(result.frame.fin == true);
+    assert(result.frame.payload == cast(ubyte[]) "Hello");
+}
+
+unittest {
+    // Test send binary creates proper frame
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.mode = ConnectionMode.server;
+    auto conn = new WebSocketConnection(stream, config);
+
+    ubyte[] data = [0x01, 0x02, 0x03];
+    conn.send(data);
+
+    auto written = stream.writtenData;
+    auto result = decodeFrame(written, false);
+    assert(result.success);
+    assert(result.frame.opcode == Opcode.Binary);
+    assert(result.frame.payload == data);
+}
+
+unittest {
+    // Test ping creates proper frame
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.mode = ConnectionMode.server;
+    auto conn = new WebSocketConnection(stream, config);
+
+    conn.ping(cast(ubyte[]) "ping");
+
+    auto written = stream.writtenData;
+    auto result = decodeFrame(written, false);
+    assert(result.success);
+    assert(result.frame.opcode == Opcode.Ping);
+    assert(result.frame.payload == cast(ubyte[]) "ping");
+}
+
+unittest {
+    // Test close with code and reason
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.mode = ConnectionMode.server;
+    auto conn = new WebSocketConnection(stream, config);
+
+    // Push a close frame response so close() completes
+    Frame closeResponse;
+    closeResponse.fin = true;
+    closeResponse.opcode = Opcode.Close;
+    closeResponse.masked = true;
+    closeResponse.maskKey = generateMaskKey();
+    closeResponse.payload = [0x03, 0xE8];  // 1000 = Normal
+    stream.pushReadData(encodeFrame(closeResponse));
+
+    conn.close(CloseCode.Normal, "Goodbye");
+
+    assert(!conn.connected);
+
+    // Check we sent a close frame
+    auto written = stream.writtenData;
+    auto result = decodeFrame(written, false);
+    assert(result.success);
+    assert(result.frame.opcode == Opcode.Close);
+
+    // Check close payload
+    auto payload = result.frame.payload;
+    assert(payload.length >= 2);
+    ushort code = (cast(ushort) payload[0] << 8) | payload[1];
+    assert(code == 1000);
+}
+
+unittest {
+    // Test receive simple text message
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.mode = ConnectionMode.server;
+    auto conn = new WebSocketConnection(stream, config);
+
+    // Create a masked text frame (client → server)
+    Frame frame;
+    frame.fin = true;
+    frame.opcode = Opcode.Text;
+    frame.masked = true;
+    frame.maskKey = generateMaskKey();
+    frame.payload = cast(ubyte[]) "Hello".dup;
+
+    stream.pushReadData(encodeFrame(frame));
+
+    auto msg = conn.receive();
+    assert(msg.type == MessageType.Text);
+    assert(msg.text == "Hello");
+}
+
+unittest {
+    // Test auto-reply to ping
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.mode = ConnectionMode.server;
+    config.autoReplyPing = true;
+    auto conn = new WebSocketConnection(stream, config);
+
+    // Send ping + text message
+    Frame pingFrame;
+    pingFrame.fin = true;
+    pingFrame.opcode = Opcode.Ping;
+    pingFrame.masked = true;
+    pingFrame.maskKey = generateMaskKey();
+    pingFrame.payload = cast(ubyte[]) "ping".dup;
+
+    Frame textFrame;
+    textFrame.fin = true;
+    textFrame.opcode = Opcode.Text;
+    textFrame.masked = true;
+    textFrame.maskKey = generateMaskKey();
+    textFrame.payload = cast(ubyte[]) "Hello".dup;
+
+    stream.pushReadData(encodeFrame(pingFrame));
+    stream.pushReadData(encodeFrame(textFrame));
+
+    // receive() should auto-reply to ping and return text message
+    auto msg = conn.receive();
+    assert(msg.type == MessageType.Text);
+    assert(msg.text == "Hello");
+
+    // Check that pong was sent
+    auto written = stream.writtenData;
+    auto result = decodeFrame(written, false);
+    assert(result.success);
+    assert(result.frame.opcode == Opcode.Pong);
+    assert(result.frame.payload == cast(ubyte[]) "ping");
+}
+
+unittest {
+    // Test client mode: sends masked frames
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.mode = ConnectionMode.client;  // Client mode
+    auto conn = new WebSocketConnection(stream, config);
+
+    conn.send("Hello from client");
+
+    auto written = stream.writtenData;
+    assert(written.length > 0);
+
+    // Client sends masked frames
+    auto result = decodeFrame(written, false);  // Don't require masked for decode
+    assert(result.success);
+    assert(result.frame.opcode == Opcode.Text);
+    assert(result.frame.masked == true, "Client mode should send masked frames");
+    assert(result.frame.payload == cast(ubyte[]) "Hello from client");
+}
+
+unittest {
+    // Test client mode: receives unmasked frames from server
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.mode = ConnectionMode.client;
+    auto conn = new WebSocketConnection(stream, config);
+
+    // Server sends unmasked frame
+    Frame serverFrame;
+    serverFrame.fin = true;
+    serverFrame.opcode = Opcode.Text;
+    serverFrame.masked = false;  // Server doesn't mask
+    serverFrame.payload = cast(ubyte[]) "Hello from server".dup;
+
+    stream.pushReadData(encodeFrame(serverFrame));
+
+    auto msg = conn.receive();
+    assert(msg.type == MessageType.Text);
+    assert(msg.text == "Hello from server");
+}
+
+unittest {
+    // Test ConnectionMode enum
+    assert(ConnectionMode.server != ConnectionMode.client);
+    
+    WebSocketConfig serverConfig;
+    serverConfig.mode = ConnectionMode.server;
+    assert(serverConfig.serverMode == true);
+    
+    WebSocketConfig clientConfig;
+    clientConfig.mode = ConnectionMode.client;
+    assert(clientConfig.serverMode == false);
+}
+
+unittest {
+    // Test subprotocol negotiation: connection created with subprotocol
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    auto conn = new WebSocketConnection(stream, config, "graphql-ws");
+
+    assert(conn.subprotocol == "graphql-ws");
+}
+
+unittest {
+    // Test subprotocol negotiation: connection without subprotocol
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    auto conn = new WebSocketConnection(stream, config);
+
+    assert(conn.subprotocol is null);
+}
+
+unittest {
+    // Test subprotocol negotiation: empty subprotocol
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    auto conn = new WebSocketConnection(stream, config, "");
+
+    assert(conn.subprotocol == "");
+}
+
+unittest {
+    // Test WebSocketConfig.subprotocols field
+    WebSocketConfig config;
+    config.subprotocols = ["graphql-ws", "json", "xml"];
+    
+    assert(config.subprotocols.length == 3);
+    assert(config.subprotocols[0] == "graphql-ws");
+    assert(config.subprotocols[1] == "json");
+    assert(config.subprotocols[2] == "xml");
+}
+
+unittest {
+    // Test pong response updates tracking
+    auto stream = new MockWebSocketStream();
+    auto config = WebSocketConfig();
+    config.mode = ConnectionMode.server;
+    auto conn = new WebSocketConnection(stream, config);
+
+    // Simulate receiving a pong frame
+    Frame pongFrame;
+    pongFrame.fin = true;
+    pongFrame.opcode = Opcode.Pong;
+    pongFrame.masked = true;  // Client sends masked
+    pongFrame.maskKey = generateMaskKey();
+    pongFrame.payload = cast(ubyte[]) "pong".dup;
+
+    // Also need a regular message after pong
+    Frame textFrame;
+    textFrame.fin = true;
+    textFrame.opcode = Opcode.Text;
+    textFrame.masked = true;
+    textFrame.maskKey = generateMaskKey();
+    textFrame.payload = cast(ubyte[]) "test".dup;
+
+    stream.pushReadData(encodeFrame(pongFrame));
+    stream.pushReadData(encodeFrame(textFrame));
+
+    // Receive should process pong and return text
+    auto msg = conn.receive();
+    assert(msg.type == MessageType.Text);
+    assert(msg.text == "test");
+}
