@@ -609,15 +609,19 @@ class WebSocketConnection {
             throw new WebSocketProtocolException("Message too large");
         }
 
+        // Track if we're in a fragmented message using _fragmentOpcode
+        // _fragmentOpcode == Continuation means "not in a fragmented message"
+        bool inFragmentedMessage = (_fragmentOpcode != Opcode.Continuation);
+
         if (frame.opcode == Opcode.Continuation) {
-            // Continuation frame - append to buffer
-            if (_fragmentBuffer.length == 0) {
+            // Continuation frame - must be in a fragmented message
+            if (!inFragmentedMessage) {
                 throw new WebSocketProtocolException("Unexpected continuation frame");
             }
             _fragmentBuffer ~= frame.payload;
         } else {
-            // New message (Text or Binary)
-            if (_fragmentBuffer.length > 0) {
+            // New message (Text or Binary) - must NOT be in a fragmented message
+            if (inFragmentedMessage) {
                 throw new WebSocketProtocolException("Expected continuation frame");
             }
             _fragmentOpcode = frame.opcode;
@@ -630,6 +634,15 @@ class WebSocketConnection {
                 ? MessageType.Text
                 : MessageType.Binary;
 
+            // RFC 6455 §5.6: Text frames must contain valid UTF-8
+            if (msgType == MessageType.Text) {
+                if (!isValidUtf8(_fragmentBuffer)) {
+                    // Close with 1007 (Invalid Frame Payload Data)
+                    closeWithCode(CloseCode.InvalidPayload, "Invalid UTF-8");
+                    throw new WebSocketClosedException(CloseCode.InvalidPayload, "Invalid UTF-8 in text message");
+                }
+            }
+
             auto msg = Message(msgType, _fragmentBuffer);
 
             // Reset fragment state
@@ -641,6 +654,99 @@ class WebSocketConnection {
 
         // Need more fragments - recurse
         return receive();
+    }
+
+    /**
+     * Validate UTF-8 encoding.
+     *
+     * RFC 6455 requires text frames to contain valid UTF-8.
+     *
+     * Returns: true if data is valid UTF-8, false otherwise
+     */
+    private static bool isValidUtf8(const(ubyte)[] data) pure nothrow @safe @nogc {
+        size_t i = 0;
+        while (i < data.length) {
+            ubyte b = data[i];
+            size_t seqLen;
+
+            if ((b & 0x80) == 0) {
+                // ASCII (0xxxxxxx)
+                seqLen = 1;
+            } else if ((b & 0xE0) == 0xC0) {
+                // 2-byte sequence (110xxxxx)
+                seqLen = 2;
+                // Reject overlong encodings (< 0x80)
+                if (b < 0xC2) return false;
+            } else if ((b & 0xF0) == 0xE0) {
+                // 3-byte sequence (1110xxxx)
+                seqLen = 3;
+            } else if ((b & 0xF8) == 0xF0) {
+                // 4-byte sequence (11110xxx)
+                seqLen = 4;
+                // Reject values > 0x10FFFF
+                if (b > 0xF4) return false;
+            } else {
+                // Invalid leading byte
+                return false;
+            }
+
+            // Check we have enough bytes
+            if (i + seqLen > data.length) return false;
+
+            // Validate continuation bytes (10xxxxxx)
+            for (size_t j = 1; j < seqLen; j++) {
+                if ((data[i + j] & 0xC0) != 0x80) return false;
+            }
+
+            // Check for overlong encodings and surrogate pairs
+            if (seqLen == 3) {
+                uint cp = ((b & 0x0F) << 12) |
+                         ((data[i + 1] & 0x3F) << 6) |
+                         (data[i + 2] & 0x3F);
+                // Reject overlong (< 0x800) and surrogates (0xD800-0xDFFF)
+                if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+            } else if (seqLen == 4) {
+                uint cp = ((b & 0x07) << 18) |
+                         ((data[i + 1] & 0x3F) << 12) |
+                         ((data[i + 2] & 0x3F) << 6) |
+                         (data[i + 3] & 0x3F);
+                // Reject overlong (< 0x10000) and > 0x10FFFF
+                if (cp < 0x10000 || cp > 0x10FFFF) return false;
+            }
+
+            i += seqLen;
+        }
+        return true;
+    }
+
+    /**
+     * Close the connection with a specific close code (internal).
+     */
+    private void closeWithCode(CloseCode code, string reason = "") @safe {
+        if (_closeSent) return;
+
+        Frame frame;
+        frame.fin = true;
+        frame.opcode = Opcode.Close;
+        frame.masked = !_config.serverMode;
+        if (frame.masked) frame.maskKey = generateMaskKey();
+
+        // Build close payload: 2-byte code + optional reason
+        auto reasonBytes = cast(const(ubyte)[]) reason;
+        frame.payload = new ubyte[](2 + reasonBytes.length);
+        frame.payload[0] = cast(ubyte)(cast(ushort) code >> 8);
+        frame.payload[1] = cast(ubyte)(cast(ushort) code & 0xFF);
+        if (reasonBytes.length > 0) {
+            frame.payload[2 .. $] = reasonBytes[];
+        }
+
+        try {
+            sendFrameInternal(frame);
+        } catch (Exception) {
+            // Ignore errors during close
+        }
+        _closeSent = true;
+        _connected = false;
     }
 
     private void waitForCloseResponse() @safe {
