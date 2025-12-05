@@ -51,3 +51,4 @@ plan.md
 
 # Autobahn test suite
 tests/autobahn
+benchmarks/

@@ -8,6 +8,21 @@
     "sourcePaths": ["source"],
     "importPaths": ["source"],
 
+    "buildTypes": {
+        "release": {
+            "dflags-ldc2": ["-O2", "-release", "-enable-inlining"],
+            "dflags-dmd": ["-O", "-release", "-inline"]
+        },
+        "release-fast": {
+            "dflags-ldc2": ["-O3", "-release", "-enable-inlining", "-mcpu=native", "-flto=full"],
+            "dflags-dmd": ["-O", "-release", "-inline", "-boundscheck=off"]
+        },
+        "release-safe": {
+            "dflags-ldc2": ["-O2", "-release", "-enable-inlining"],
+            "dflags-dmd": ["-O", "-release", "-inline"]
+        }
+    },
+
     "configurations": [
         {
             "name": "library",

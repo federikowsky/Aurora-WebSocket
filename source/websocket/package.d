@@ -77,7 +77,12 @@ public import websocket.protocol :
     isValidOpcode,
     validateFrame,
     WebSocketException,
-    WebSocketProtocolException;
+    WebSocketProtocolException,
+    // Zero-copy / low-allocation variants
+    DecodeResultZeroCopy,
+    decodeFrameZeroCopy,
+    encodedFrameSize,
+    encodeFrameInto;
 
 // Handshake utilities (server mode)
 public import websocket.handshake :

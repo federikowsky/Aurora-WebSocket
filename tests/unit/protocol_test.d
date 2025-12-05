@@ -599,3 +599,163 @@ unittest {
     assert(result.success);
     assert(result.frame.payload == closePayload);
 }
+
+// ============================================================================
+// applyMask Optimization Tests
+// ============================================================================
+
+@("applyMask handles various payload sizes correctly")
+unittest {
+    ubyte[4] key = [0xAA, 0xBB, 0xCC, 0xDD];
+    
+    // Test sizes: 0, 1, 3, 7, 8, 9, 15, 16, 17, 63, 64, 65, 1000
+    foreach (size; [0, 1, 3, 7, 8, 9, 15, 16, 17, 63, 64, 65, 1000]) {
+        // Create test data
+        auto data = new ubyte[](size);
+        foreach (i, ref b; data) {
+            b = cast(ubyte)(i & 0xFF);
+        }
+        auto original = data.dup;
+        
+        // Mask
+        applyMask(data, key);
+        
+        // Verify XOR was applied correctly
+        foreach (i, b; data) {
+            assert(b == (original[i] ^ key[i & 3]), 
+                   "Mismatch at index " ~ i.stringof);
+        }
+        
+        // Unmask (should restore original)
+        applyMask(data, key);
+        assert(data == original, "Symmetric mask/unmask failed for size " ~ size.stringof);
+    }
+}
+
+@("applyMask word-aligned optimization produces correct results")
+unittest {
+    // Test specifically at word boundaries (8 bytes)
+    ubyte[4] key = [0x12, 0x34, 0x56, 0x78];
+    
+    // Exactly 8 bytes (one full word)
+    ubyte[] data8 = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    applyMask(data8, key);
+    assert(data8 == [0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78]);
+    
+    // 16 bytes (two full words)
+    ubyte[] data16 = new ubyte[](16);
+    applyMask(data16, key);
+    assert(data16[0..8] == [0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78]);
+    assert(data16[8..16] == [0x12, 0x34, 0x56, 0x78, 0x12, 0x34, 0x56, 0x78]);
+}
+
+@("applyMask handles non-aligned tail bytes")
+unittest {
+    ubyte[4] key = [0xFF, 0x00, 0xFF, 0x00];
+    
+    // 11 bytes = 8 (word) + 3 (tail)
+    ubyte[] data = [0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00];
+    auto expected = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+    
+    applyMask(data, key);
+    assert(data == expected);
+}
+
+@("applyMask empty data is no-op")
+unittest {
+    ubyte[4] key = [0x12, 0x34, 0x56, 0x78];
+    ubyte[] empty;
+    
+    applyMask(empty, key);  // Should not crash
+    assert(empty.length == 0);
+}
+
+// ============================================================================
+// Zero-Copy API Tests
+// ============================================================================
+
+@("decodeFrameZeroCopy returns slice into input buffer")
+unittest {
+    // Create a simple unmasked text frame
+    ubyte[] frameData = [
+        0x81,  // FIN=1, opcode=1 (text)
+        0x05,  // len=5, mask=0
+        0x48, 0x65, 0x6C, 0x6C, 0x6F  // "Hello"
+    ];
+    
+    auto result = decodeFrameZeroCopy(frameData, false);
+    
+    assert(result.success);
+    assert(result.frame.opcode == Opcode.Text);
+    assert(result.frame.payload == cast(ubyte[]) "Hello");
+    // Verify it's a slice (same memory)
+    assert(result.frame.payload.ptr == frameData.ptr + 2);
+}
+
+@("decodeFrameZeroCopy unmasks in-place")
+unittest {
+    ubyte[4] maskKey = [0x37, 0xFA, 0x21, 0x3D];
+    ubyte[] original = cast(ubyte[]) "Hello".dup;
+    ubyte[] masked = original.dup;
+    applyMask(masked, maskKey);
+    
+    ubyte[] frameData = cast(ubyte[])[
+        0x81,  // FIN=1, opcode=1 (text)
+        0x85,  // len=5, mask=1
+    ] ~ maskKey[] ~ masked;
+    
+    auto result = decodeFrameZeroCopy(frameData, true);
+    
+    assert(result.success);
+    assert(result.frame.payload == original);  // Unmasked correctly
+}
+
+@("encodedFrameSize calculates correct sizes")
+unittest {
+    // Small payload (<=125 bytes)
+    assert(encodedFrameSize(0, false) == 2);
+    assert(encodedFrameSize(125, false) == 2 + 125);
+    assert(encodedFrameSize(125, true) == 2 + 4 + 125);
+    
+    // Medium payload (126-65535 bytes)
+    assert(encodedFrameSize(126, false) == 4 + 126);
+    assert(encodedFrameSize(65535, false) == 4 + 65535);
+    assert(encodedFrameSize(126, true) == 4 + 4 + 126);
+    
+    // Large payload (>65535 bytes)
+    assert(encodedFrameSize(65536, false) == 10 + 65536);
+    assert(encodedFrameSize(65536, true) == 10 + 4 + 65536);
+}
+
+@("encodeFrameInto produces same output as encodeFrame")
+unittest {
+    Frame frame;
+    frame.fin = true;
+    frame.opcode = Opcode.Text;
+    frame.masked = false;
+    frame.payload = cast(ubyte[]) "Hello, World!".dup;
+    
+    auto expected = encodeFrame(frame);
+    
+    auto buffer = new ubyte[](encodedFrameSize(frame.payload.length, frame.masked));
+    auto actual = encodeFrameInto(frame, buffer);
+    
+    assert(actual == expected);
+}
+
+@("encodeFrameInto works with masked frames")
+unittest {
+    Frame frame;
+    frame.fin = true;
+    frame.opcode = Opcode.Binary;
+    frame.masked = true;
+    frame.maskKey = [0x12, 0x34, 0x56, 0x78];
+    frame.payload = [0x01, 0x02, 0x03, 0x04, 0x05];
+    
+    auto expected = encodeFrame(frame);
+    
+    auto buffer = new ubyte[](encodedFrameSize(frame.payload.length, frame.masked));
+    auto actual = encodeFrameInto(frame, buffer);
+    
+    assert(actual == expected);
+}
