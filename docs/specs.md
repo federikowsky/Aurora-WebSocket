@@ -398,8 +398,96 @@ ws.close();
 
 ---
 
-## 15. Version History
+## 15. Backpressure & Flow Control
+
+**Module**: `websocket.backpressure`
+
+Flow control mechanism to handle slow WebSocket clients, preventing memory exhaustion and improving server stability.
+
+### 15.1 Problem Statement
+
+When a WebSocket server sends data faster than a client can receive it:
+- Send buffers grow unbounded
+- Memory usage spikes
+- Server becomes unstable
+- Other connections suffer
+
+The backpressure module addresses this with:
+- **Send buffer tracking** (`bufferedAmount`)
+- **High/low water marks** with hysteresis
+- **Slow client detection** and automatic disconnection
+- **Message priority queues**
+
+### 15.2 Configuration
+
+```d
+BackpressureConfig config;
+config.maxSendBufferSize = 16 * 1024 * 1024;  // 16MB max
+config.highWaterRatio = 0.75;                  // PAUSED at 75%
+config.lowWaterRatio = 0.25;                   // FLOWING at 25%
+config.slowClientTimeout = 30.seconds;         // Disconnect after 30s paused
+config.slowClientAction = SlowClientAction.DISCONNECT;
+config.enablePriorityQueue = true;             // Priority ordering
+```
+
+### 15.3 States
+
+| State | Description |
+|-------|-------------|
+| `FLOWING` | Buffer below low water mark - normal operation |
+| `PAUSED` | Buffer above high water mark - should stop sending |
+| `CRITICAL` | Buffer full - may disconnect slow client |
+
+### 15.4 Message Priority
+
+| Priority | Usage |
+|----------|-------|
+| `CONTROL` | Ping, pong, close frames - always sent first |
+| `HIGH` | Important messages - sent before normal |
+| `NORMAL` | Default for user messages |
+| `LOW` | Background data - may be dropped when buffer full |
+
+### 15.5 Usage
+
+```d
+auto config = BackpressureConfig();
+auto bpws = new BackpressureWebSocket(connection, config);
+
+// Set callbacks
+bpws.onDrain = () { log.info("Buffer drained, can send more"); };
+bpws.onSlowClient = () { log.warn("Slow client detected!"); };
+bpws.onStateChange = (old, new_) { log.info("State: ", old, " → ", new_); };
+
+// Send with priority
+bpws.send("critical update", MessagePriority.HIGH);
+bpws.send("normal data");  // NORMAL priority
+bpws.send(binaryData, MessagePriority.LOW);
+
+// Check buffer state
+if (bpws.isPaused) {
+    // Wait for drain event
+}
+
+// Get statistics
+auto stats = bpws.getStats();
+log.info("Buffered: ", stats.bufferedAmount, " bytes");
+log.info("Dropped: ", stats.messagesDropped, " messages");
+```
+
+### 15.6 Slow Client Actions
+
+| Action | Behavior |
+|--------|----------|
+| `DISCONNECT` | Close connection with CloseCode.PolicyViolation |
+| `DROP_MESSAGES` | Clear buffer but keep connection |
+| `LOG_ONLY` | Just log, don't take action |
+| `CUSTOM` | Call `onSlowClient` callback for custom handling |
+
+---
+
+## 16. Version History
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.1.0 | 2025-12-05 | Added backpressure module for flow control |
 | 1.0.0 | 2025-12-05 | Initial stable release - zero dependencies, protocol-only |

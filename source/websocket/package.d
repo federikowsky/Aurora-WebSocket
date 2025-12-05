@@ -139,6 +139,19 @@ public import websocket.tls :
     TlsPeerValidation,
     TlsConfig;
 
+// Backpressure and flow control
+public import websocket.backpressure :
+    MessagePriority,
+    BackpressureState,
+    BackpressureConfig,
+    SlowClientAction,
+    BackpressureStats,
+    SendBuffer,
+    BackpressureWebSocket,
+    DrainCallback,
+    SlowClientCallback,
+    StateChangeCallback;
+
 // ============================================================================
 // CONVENIENCE FUNCTIONS
 // ============================================================================
