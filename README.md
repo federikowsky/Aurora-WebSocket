@@ -28,7 +28,7 @@
 ```json
 {
     "dependencies": {
-        "websocket": "~>1.0.0"
+        "aurora-websocket": "~>1.0.0"
     }
 }
 ```

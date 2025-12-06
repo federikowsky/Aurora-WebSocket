@@ -1,28 +1,23 @@
 {
-    "name": "websocket",
-    "description": "RFC 6455 WebSocket library for D - standalone, zero dependencies",
-    "authors": ["Aurora Framework"],
-    "license": "MIT",
+    "name": "aurora-websocket",
     "version": "1.0.0",
-
+    "description": "RFC 6455 WebSocket library for D - standalone, zero dependencies",
+    "authors": ["Federico Filippi"],
+    "license": "MIT",
+    "homepage": "https://github.com/federikowsky/aurora-websocket",
+    "copyright": "Copyright 2024 Federico Filippi",
+    
+    "targetType": "library",
     "sourcePaths": ["source"],
     "importPaths": ["source"],
-
+    
     "buildTypes": {
         "release": {
             "dflags-ldc2": ["-O2", "-release", "-enable-inlining"],
             "dflags-dmd": ["-O", "-release", "-inline"]
-        },
-        "release-fast": {
-            "dflags-ldc2": ["-O3", "-release", "-enable-inlining", "-mcpu=native", "-flto=full"],
-            "dflags-dmd": ["-O", "-release", "-inline", "-boundscheck=off"]
-        },
-        "release-safe": {
-            "dflags-ldc2": ["-O2", "-release", "-enable-inlining"],
-            "dflags-dmd": ["-O", "-release", "-inline"]
         }
     },
-
+    
     "configurations": [
         {
             "name": "library",
@@ -31,6 +26,9 @@
         {
             "name": "unittest",
             "targetType": "executable",
+            "dependencies": {
+                "unit-threaded": "~>2.1.0"
+            },
             "sourcePaths": ["source", "tests/unit"],
             "importPaths": ["source", "tests/unit"],
             "mainSourceFile": "tests/runner.d"

@@ -2,8 +2,9 @@
 
 > **Version**: 1.0.0  
 > **Standard**: RFC 6455 (WebSocket Protocol)  
-> **Language**: D  
-> **Last Updated**: 2025-12-05
+> **License**: MIT  
+> **Repository**: [github.com/federikowsky/aurora-websocket](https://github.com/federikowsky/aurora-websocket)  
+> **Last Updated**: 2025-12-06
 
 ---
 
@@ -187,27 +188,86 @@ interface IWebSocketStream {
 
 ## 6. Configuration
 
-### 6.1 WebSocketConfig
+### 6.1 ConnectionMode
 
 ```d
-struct WebSocketConfig {
-    size_t maxFrameSize = 64 * 1024;           // 64KB
-    size_t maxMessageSize = 16 * 1024 * 1024;  // 16MB
-    bool autoReplyPing = true;                  // Auto pong on ping
-    ConnectionMode mode = ConnectionMode.server;
+enum ConnectionMode {
+    /// Server mode (default): expect masked frames, send unmasked
+    server,
+    /// Client mode: expect unmasked frames, send masked
+    client
 }
 ```
 
-### 6.2 TlsConfig
+### 6.2 WebSocketConfig
+
+```d
+struct WebSocketConfig {
+    /// Maximum size of a single frame payload (default: 64KB)
+    size_t maxFrameSize = 64 * 1024;
+    
+    /// Maximum size of a reassembled message (default: 16MB)
+    size_t maxMessageSize = 16 * 1024 * 1024;
+    
+    /// Timeout for read operations (0 = no timeout)
+    Duration readTimeout = Duration.zero;
+    
+    /// Automatically reply to ping frames with matching pong
+    bool autoReplyPing = true;
+    
+    /// Connection mode: server (default) or client
+    ConnectionMode mode = ConnectionMode.server;
+    
+    /// Subprotocols supported (server) or requested (client)
+    string[] subprotocols;
+    
+    /// Helper property for backward compatibility
+    @property bool serverMode() const pure @safe nothrow;
+}
+```
+
+### 6.3 TlsPeerValidation
+
+```d
+enum TlsPeerValidation {
+    /// Validate certificate against trusted CAs (recommended for production)
+    trustedCert,
+    
+    /// Validate certificate and peer name but don't require trusted CA
+    validCert,
+    
+    /// Only require certificate exists, no validation
+    requireCert,
+    
+    /// Skip all certificate validation (INSECURE - for testing only!)
+    none
+}
+```
+
+### 6.4 TlsConfig
 
 ```d
 struct TlsConfig {
+    /// How to validate the server's certificate
     TlsPeerValidation peerValidation = TlsPeerValidation.trustedCert;
-    string caCertFile = null;       // Custom CA certificate
-    string clientCertFile = null;   // Client certificate (mTLS)
-    string clientKeyFile = null;    // Client private key
-    string sniHost = null;          // Override SNI hostname
-    string minVersion = null;       // Minimum TLS version
+    
+    /// Custom CA certificate file path (PEM format)
+    string caCertFile = null;
+    
+    /// Client certificate file path (PEM format) for mutual TLS
+    string clientCertFile = null;
+    
+    /// Client private key file path (PEM format) for mutual TLS
+    string clientKeyFile = null;
+    
+    /// Override SNI hostname (null = use connection hostname)
+    string sniHost = null;
+    
+    /// Allow specific TLS versions (null = use library defaults)
+    string minVersion = null;
+    
+    /// Create a TlsConfig that skips certificate validation (INSECURE!)
+    static TlsConfig insecure() pure @safe nothrow;
 }
 ```
 
@@ -421,13 +481,40 @@ The backpressure module addresses this with:
 ### 15.2 Configuration
 
 ```d
-BackpressureConfig config;
-config.maxSendBufferSize = 16 * 1024 * 1024;  // 16MB max
-config.highWaterRatio = 0.75;                  // PAUSED at 75%
-config.lowWaterRatio = 0.25;                   // FLOWING at 25%
-config.slowClientTimeout = 30.seconds;         // Disconnect after 30s paused
-config.slowClientAction = SlowClientAction.DISCONNECT;
-config.enablePriorityQueue = true;             // Priority ordering
+struct BackpressureConfig {
+    /// Maximum size of send buffer in bytes (default: 16MB)
+    size_t maxSendBufferSize = 16 * 1024 * 1024;
+    
+    /// High water mark as ratio of maxSendBufferSize (default: 0.75)
+    double highWaterRatio = 0.75;
+    
+    /// Low water mark as ratio of maxSendBufferSize (default: 0.25)
+    double lowWaterRatio = 0.25;
+    
+    /// Timeout for slow client detection (default: 30 seconds)
+    Duration slowClientTimeout = 30.seconds;
+    
+    /// Action to take when slow client is detected
+    SlowClientAction slowClientAction = SlowClientAction.DISCONNECT;
+    
+    /// Maximum number of pending messages (default: 10000)
+    size_t maxPendingMessages = 10_000;
+    
+    /// Interval for drain attempts when paused (default: 10ms)
+    Duration drainInterval = 10.msecs;
+    
+    /// Enable message priority queue (default: true)
+    bool enablePriorityQueue = true;
+    
+    /// Drop low priority messages when buffer is full (default: true)
+    bool dropLowPriorityOnFull = true;
+    
+    /// Computed: absolute high water mark in bytes
+    @property size_t highWaterMark() const;
+    
+    /// Computed: absolute low water mark in bytes
+    @property size_t lowWaterMark() const;
+}
 ```
 
 ### 15.3 States
