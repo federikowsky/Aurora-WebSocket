@@ -1,6 +1,5 @@
 {
     "name": "aurora-websocket",
-    "version": "1.0.0",
     "description": "RFC 6455 WebSocket library for D - standalone, zero dependencies",
     "authors": ["Federico Filippi"],
     "license": "MIT",
