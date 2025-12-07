@@ -3,6 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![D](https://img.shields.io/badge/D-red.svg)](https://dlang.org/)
 [![RFC 6455](https://img.shields.io/badge/RFC-6455-blue.svg)](https://tools.ietf.org/html/rfc6455)
+[![Tests](https://img.shields.io/badge/tests-9%20modules%20passing-brightgreen)](tests/)
 
 **RFC 6455 compliant WebSocket library for D - Zero dependencies, protocol-only implementation.**
 
