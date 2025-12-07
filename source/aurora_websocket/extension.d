@@ -24,7 +24,7 @@
  * License: MIT
  * Standards: RFC 6455 Section 9, RFC 7692
  */
-module websocket.extension;
+module aurora_websocket.extension;
 
 import std.algorithm : canFind, map, splitter, startsWith;
 import std.array : array, appender;
@@ -32,7 +32,7 @@ import std.conv : to, ConvException;
 import std.string : strip;
 import std.zlib : Compress, UnCompress, HeaderFormat;
 
-import websocket.protocol : Frame, Opcode, WebSocketException;
+import aurora_websocket.protocol : Frame, Opcode, WebSocketException;
 
 // ============================================================================
 // EXCEPTIONS

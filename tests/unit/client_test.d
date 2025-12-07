@@ -3,7 +3,7 @@
  */
 module tests.unit.client_test;
 
-import websocket;
+import aurora_websocket;
 
 // ============================================================================
 // URL PARSING TESTS

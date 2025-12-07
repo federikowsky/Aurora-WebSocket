@@ -38,14 +38,14 @@
  * License: MIT
  * Standards: RFC 6455
  */
-module websocket.connection;
+module aurora_websocket.connection;
 
 import core.time : Duration, seconds, MonoTime;
 
-import websocket.message;
-import websocket.protocol : Opcode, Frame, encodeFrame, decodeFrame, decodeFrameZeroCopy,
+import aurora_websocket.message;
+import aurora_websocket.protocol : Opcode, Frame, encodeFrame, decodeFrame, decodeFrameZeroCopy,
     applyMask, generateMaskKey, isControlOpcode, WebSocketException, WebSocketProtocolException;
-import websocket.stream;
+import aurora_websocket.stream;
 
 // ============================================================================
 // EXCEPTIONS

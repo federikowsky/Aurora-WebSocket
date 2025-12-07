@@ -1,11 +1,11 @@
 /**
- * Unit Tests for websocket.handshake
+ * Unit Tests for aurora_websocket.handshake
  *
  * Comprehensive tests for WebSocket handshake validation and response generation.
  */
 module unit.handshake_test;
 
-import websocket.handshake;
+import aurora_websocket.handshake;
 import std.algorithm : canFind;
 
 // ============================================================================

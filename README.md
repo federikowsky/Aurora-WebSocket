@@ -1,51 +1,46 @@
-<p align="center">
-  <h1 align="center">🔌 Aurora-WebSocket</h1>
-  <p align="center">
-    <strong>RFC 6455 WebSocket library for D</strong>
-  </p>
-  <p align="center">
-    Zero dependencies • Transport agnostic • Protocol-only design
-  </p>
-</p>
+# Aurora-WebSocket
 
-<p align="center">
-  <a href="https://code.dlang.org/packages/aurora-websocket"><img src="https://img.shields.io/dub/v/aurora-websocket?style=flat-square&color=blue" alt="DUB Version"></a>
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License: MIT"></a>
-  <a href="https://tools.ietf.org/html/rfc6455"><img src="https://img.shields.io/badge/RFC-6455-blue.svg?style=flat-square" alt="RFC 6455"></a>
-  <a href="https://dlang.org/"><img src="https://img.shields.io/badge/D-2.105+-red.svg?style=flat-square" alt="D Language"></a>
-</p>
+RFC 6455 WebSocket library for D.
 
----
+Protocol-only implementation with zero dependencies. Bring your own transport.
 
-## Philosophy
+[![DUB](https://img.shields.io/dub/v/aurora-websocket)](https://code.dlang.org/packages/aurora-websocket)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![D](https://img.shields.io/badge/D-2.105%2B-red.svg)](https://dlang.org/)
 
-> WebSocket libraries should be **protocol-only**. Connection pooling, auto-reconnect, and transport adapters belong in your application framework.
+## Overview
 
-Aurora-WebSocket implements the WebSocket protocol (RFC 6455) without opinions about your transport layer. Bring your own TCP/TLS stream.
+Aurora-WebSocket implements the WebSocket protocol without opinions about your transport layer. It provides frame encoding/decoding, masking, fragmentation, and close handshake handling.
 
-## Features
+**Key characteristics:**
 
-- ✅ **Zero dependencies** — Only druntime/Phobos
-- 🔌 **Transport agnostic** — Works with any `IWebSocketStream` implementation
-- 📋 **Full RFC 6455** — Frame encoding, masking, fragmentation, close handshake
-- 🔄 **Client & Server** — Both modes supported
-- 📦 **Per-Message Deflate** — RFC 7692 compression (optional)
-- 🚦 **Backpressure** — Flow control for slow clients
+- Zero external dependencies (only druntime/Phobos)
+- Transport agnostic via `IWebSocketStream` interface
+- Full RFC 6455 compliance
+- Both client and server modes
+- Optional RFC 7692 per-message deflate compression
+- Backpressure support for flow control
 
-### What's NOT included (by design)
+**Not included by design:**
 
-- ❌ TCP/TLS socket implementation
-- ❌ Connection pooling  
-- ❌ Auto-reconnect logic
+- TCP/TLS socket implementation
+- Connection pooling
+- Auto-reconnect logic
 
 ## Installation
 
-### DUB
+Add to your `dub.json`:
 
 ```json
 "dependencies": {
     "aurora-websocket": "~>1.0.0"
 }
+```
+
+Or with `dub.sdl`:
+
+```sdl
+dependency "aurora-websocket" version="~>1.0.0"
 ```
 
 ## Quick Start
@@ -55,7 +50,7 @@ Aurora-WebSocket implements the WebSocket protocol (RFC 6455) without opinions a
 Adapt your transport layer to the stream interface:
 
 ```d
-import websocket;
+import aurora_websocket;
 
 class MyTCPAdapter : IWebSocketStream {
     private MyTCPSocket socket;
@@ -82,29 +77,25 @@ class MyTCPAdapter : IWebSocketStream {
 }
 ```
 
-### Step 2: Server — Handle WebSocket Upgrade
+### Step 2: Server Mode
 
 ```d
-import websocket;
+import aurora_websocket;
 
 void handleUpgrade(HTTPRequest req, TCPSocket socket) {
-    // Validate upgrade request
     auto validation = validateUpgradeRequest(req.method, req.headers);
     if (!validation.valid) {
         socket.write(cast(ubyte[]) "HTTP/1.1 400 Bad Request\r\n\r\n");
         return;
     }
     
-    // Send 101 Switching Protocols
     auto response = buildUpgradeResponse(validation.clientKey);
     socket.write(cast(ubyte[]) response);
     
-    // Create WebSocket connection
     auto stream = new MyTCPAdapter(socket);
     auto ws = new WebSocketConnection(stream);
     scope(exit) ws.close();
     
-    // Echo server
     while (ws.connected) {
         auto msg = ws.receive();
         
@@ -117,59 +108,39 @@ void handleUpgrade(HTTPRequest req, TCPSocket socket) {
 }
 ```
 
-### Step 3: Client — Connect to Server
+### Step 3: Client Mode
 
 ```d
-import websocket;
+import aurora_websocket;
 
 void connectToServer(string host, ushort port) {
     auto socket = new TCPSocket(host, port);
     auto stream = new MyTCPAdapter(socket);
     
-    // Parse WebSocket URL
     auto url = parseWebSocketUrl("ws://example.com/chat");
-    
-    // Perform handshake
     auto ws = WebSocketClient.connect(stream, url);
     scope(exit) ws.close();
     
-    // Send message
     ws.send("Hello, server!");
     
-    // Receive response
     auto msg = ws.receive();
     writeln("Received: ", msg.text);
 }
 ```
 
-## API Overview
-
-### Message Types
-
-```d
-enum MessageType {
-    Text,    // UTF-8 text
-    Binary,  // Raw bytes
-    Close,   // Connection close
-    Ping,    // Heartbeat request
-    Pong     // Heartbeat response
-}
-```
+## API Reference
 
 ### WebSocketConnection
 
 ```d
 class WebSocketConnection {
-    // Send
     void send(string text);
     void send(const(ubyte)[] binary);
     void ping(const(ubyte)[] payload = null);
     void pong(const(ubyte)[] payload = null);
     
-    // Receive
     Message receive();
     
-    // Control
     void close(CloseCode code = CloseCode.Normal, string reason = "");
     @property bool connected();
 }
@@ -182,13 +153,21 @@ struct Message {
     MessageType type;
     ubyte[] data;
     
-    @property string text();           // For Text messages
-    @property CloseCode closeCode();   // For Close messages
-    @property string closeReason();    // For Close messages
+    @property string text();
+    @property CloseCode closeCode();
+    @property string closeReason();
+}
+
+enum MessageType {
+    Text,
+    Binary,
+    Close,
+    Ping,
+    Pong
 }
 ```
 
-### Close Codes (RFC 6455)
+### Close Codes
 
 | Code | Name | Description |
 |------|------|-------------|
@@ -200,38 +179,44 @@ struct Message {
 | 1009 | MessageTooBig | Message too large |
 | 1011 | InternalError | Server error |
 
-## Configuration
+### Configuration
 
 ```d
 WebSocketConfig config;
-config.maxFrameSize = 64 * 1024;       // 64 KB
-config.maxMessageSize = 16 * 1024 * 1024;  // 16 MB
-config.autoReplyPing = true;           // Auto pong
-config.mode = ConnectionMode.server;   // or .client
+config.maxFrameSize = 64 * 1024;
+config.maxMessageSize = 16 * 1024 * 1024;
+config.autoReplyPing = true;
+config.mode = ConnectionMode.server;
 
 auto ws = new WebSocketConnection(stream, config);
 ```
 
-## Backpressure (Flow Control)
-
-Handle slow clients without memory exhaustion:
+### Backpressure
 
 ```d
-import websocket.backpressure;
+import aurora_websocket.backpressure;
 
 auto config = BackpressureConfig();
-config.maxSendBufferSize = 4 * 1024 * 1024;  // 4 MB buffer
+config.maxSendBufferSize = 4 * 1024 * 1024;
 config.slowClientTimeout = 30.seconds;
 
 auto bpws = new BackpressureWebSocket(connection, config);
-
-bpws.onDrain = () => writeln("Buffer drained");
-bpws.onSlowClient = () => writeln("Slow client detected");
-
-// Send with priority
-bpws.send("important", MessagePriority.HIGH);
-bpws.send("normal data", MessagePriority.NORMAL);
+bpws.send("data", MessagePriority.HIGH);
 ```
+
+## Building
+
+### Requirements
+
+- **D Compiler**: LDC 1.35+ (recommended) or DMD 2.105+
+
+### Make Targets
+
+| Target | Description |
+|--------|-------------|
+| `make lib` | Build library |
+| `dub test` | Run unit tests |
+| `make clean` | Clean artifacts |
 
 ## Documentation
 
@@ -239,45 +224,14 @@ bpws.send("normal data", MessagePriority.NORMAL);
 - [RFC 6455](https://tools.ietf.org/html/rfc6455) — WebSocket Protocol
 - [RFC 7692](https://tools.ietf.org/html/rfc7692) — Per-Message Deflate
 
-## Building
-
-### Requirements
-
-- **D Compiler**: LDC 1.35+ or DMD 2.105+
-
-### Make Targets
-
-```bash
-make lib    # Build library
-dub test    # Run unit tests
-make clean  # Clean artifacts
-```
-
-## Testing
-
-```bash
-# Unit tests
-dub test
-
-# Autobahn test suite (requires vibe-d)
-cd tests/autobahn
-./run_tests.sh
-```
-
 ## Contributing
 
-Contributions welcome! Please ensure:
+Contributions are welcome. Please ensure:
 
 1. Tests pass (`dub test`)
-2. RFC 6455 compliance maintained
+2. RFC 6455 compliance is maintained
 3. No external dependencies added
 
 ## License
 
-MIT License — see [LICENSE](LICENSE)
-
----
-
-<p align="center">
-  <sub>Built with ❤️ for the D community</sub>
-</p>
+MIT License — see [LICENSE](LICENSE) for details.

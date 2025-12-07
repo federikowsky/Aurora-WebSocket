@@ -1,9 +1,9 @@
 /**
- * Unit tests for websocket.stream module
+ * Unit tests for aurora_websocket.stream module
  */
 module tests.unit.stream_test;
 
-import websocket.stream;
+import aurora_websocket.stream;
 
 // Test MockWebSocketStream - basic read
 unittest {

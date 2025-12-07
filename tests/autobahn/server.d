@@ -25,7 +25,7 @@ import core.memory : GC;
 import vibe.core.core : runTask, sleep;
 import vibe.core.net : listenTCP, TCPConnection, TCPListenOptions;
 
-import websocket;
+import aurora_websocket;
 
 /// Connection handler wrapper that's @safe and nothrow
 void safeHandleConnection(TCPConnection conn) nothrow @safe {

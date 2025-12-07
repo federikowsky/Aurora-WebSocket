@@ -14,11 +14,11 @@ void main() {
     writeln();
 
     // Import all test modules to run their unittests
-    static import websocket.message;
-    static import websocket.protocol;
-    static import websocket.handshake;
-    static import websocket.stream;
-    static import websocket.connection;
+    static import aurora_websocket.message;
+    static import aurora_websocket.protocol;
+    static import aurora_websocket.handshake;
+    static import aurora_websocket.stream;
+    static import aurora_websocket.connection;
 
     // Import dedicated test files
     static import unit.message_test;

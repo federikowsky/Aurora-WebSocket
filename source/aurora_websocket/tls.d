@@ -8,7 +8,7 @@
  *
  * Example (with vibe-d adapter in your application):
  * ---
- * import websocket;
+ * import aurora_websocket;
  * import your_app.adapters : VibeTLSAdapter;
  *
  * // Create TLS config
@@ -26,7 +26,7 @@
  * License: MIT
  * Standards: RFC 6455, RFC 5246 (TLS 1.2), RFC 8446 (TLS 1.3)
  */
-module websocket.tls;
+module aurora_websocket.tls;
 
 // ============================================================================
 // TLS CONFIGURATION

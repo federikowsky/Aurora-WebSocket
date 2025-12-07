@@ -37,15 +37,15 @@
  * License: MIT
  * Standards: Similar to HTML5 WebSocket bufferedAmount behavior
  */
-module websocket.backpressure;
+module aurora_websocket.backpressure;
 
 import core.time : Duration, MonoTime, seconds, msecs;
 import core.sync.mutex : Mutex;
 import std.algorithm : min, max, remove;
 import std.container.binaryheap : BinaryHeap;
 
-import websocket.connection : WebSocketConnection, WebSocketConfig;
-import websocket.message : Message, MessageType, CloseCode;
+import aurora_websocket.connection : WebSocketConnection, WebSocketConfig;
+import aurora_websocket.message : Message, MessageType, CloseCode;
 
 // ============================================================================
 // MESSAGE PRIORITY

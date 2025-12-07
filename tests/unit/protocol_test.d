@@ -1,11 +1,11 @@
 /**
- * Unit Tests for websocket.protocol
+ * Unit Tests for aurora_websocket.protocol
  *
  * Comprehensive tests for WebSocket frame encoding, decoding, and masking.
  */
 module unit.protocol_test;
 
-import websocket.protocol;
+import aurora_websocket.protocol;
 
 // ============================================================================
 // Opcode Tests

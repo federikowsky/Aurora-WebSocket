@@ -1,14 +1,14 @@
 /**
- * Unit Tests for websocket.connection
+ * Unit Tests for aurora_websocket.connection
  *
  * Tests for WebSocket connection management, UTF-8 validation, etc.
  */
 module unit.connection_test;
 
-import websocket.connection;
-import websocket.protocol;
-import websocket.stream;
-import websocket.message;
+import aurora_websocket.connection;
+import aurora_websocket.protocol;
+import aurora_websocket.stream;
+import aurora_websocket.message;
 
 // ============================================================================
 // UTF-8 Validation Tests (via WebSocketConnection)

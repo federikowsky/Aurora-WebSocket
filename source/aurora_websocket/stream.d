@@ -16,9 +16,9 @@
  * Authors: Aurora WebSocket Contributors
  * License: MIT
  */
-module websocket.stream;
+module aurora_websocket.stream;
 
-import websocket.protocol : WebSocketException;
+import aurora_websocket.protocol : WebSocketException;
 
 // ============================================================================
 // EXCEPTIONS

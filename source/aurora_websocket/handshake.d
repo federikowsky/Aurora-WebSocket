@@ -28,7 +28,7 @@
  * License: MIT
  * Standards: RFC 6455 Section 4
  */
-module websocket.handshake;
+module aurora_websocket.handshake;
 
 import std.algorithm : canFind, map, splitter;
 import std.array : array;
@@ -38,7 +38,7 @@ import std.digest.sha : SHA1;
 import std.string : strip, toLower;
 import std.uni : toLower;
 
-import websocket.protocol : WebSocketException;
+import aurora_websocket.protocol : WebSocketException;
 
 // ============================================================================
 // EXCEPTIONS

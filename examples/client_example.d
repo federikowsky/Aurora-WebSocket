@@ -16,13 +16,13 @@ module examples.client_example;
 
 /+ dub.sdl:
     name "client_example"
-    dependency "websocket" path=".."
+    dependency "aurora-websocket" path=".."
     dependency "vibe-core" version="~>2.0"
 +/
 
 import vibe.core.core : runApplication;
 
-import websocket;
+import aurora_websocket;
 
 import std.stdio : writeln, writefln, readln;
 import std.string : strip;

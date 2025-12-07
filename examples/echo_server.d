@@ -11,14 +11,14 @@ module examples.echo_server;
 
 /+ dub.sdl:
     name "echo_server"
-    dependency "websocket" path=".."
+    dependency "aurora-websocket" path=".."
     dependency "vibe-core" version="~>2.0"
 +/
 
 import vibe.core.core : runTask, runApplication;
 import vibe.core.net : listenTCP, TCPConnection;
 
-import websocket;
+import aurora_websocket;
 
 import std.stdio : writeln, writefln;
 

@@ -1,11 +1,11 @@
 /**
- * Unit Tests for websocket.message
+ * Unit Tests for aurora_websocket.message
  *
  * Comprehensive tests for MessageType, CloseCode, and Message struct.
  */
 module unit.message_test;
 
-import websocket.message;
+import aurora_websocket.message;
 
 // ============================================================================
 // MessageType Tests

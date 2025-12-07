@@ -8,7 +8,7 @@
  *
  * Example:
  * ---
- * import websocket;
+ * import aurora_websocket;
  * import your_app.adapters : VibeTCPAdapter;
  * import vibe.core.net : connectTCP;
  *
@@ -34,20 +34,20 @@
  * License: MIT
  * Standards: RFC 6455
  */
-module websocket.client;
+module aurora_websocket.client;
 
 import std.algorithm : findSplit, startsWith;
 import std.conv : to, ConvException;
 import std.exception : enforce;
 import std.string : strip;
 
-import websocket.connection;
-import websocket.handshake : generateSecWebSocketKey, buildUpgradeRequest, 
+import aurora_websocket.connection;
+import aurora_websocket.handshake : generateSecWebSocketKey, buildUpgradeRequest, 
                              validateUpgradeResponse, validateSelectedSubprotocol,
                              WebSocketHandshakeException;
-import websocket.protocol : WebSocketException;
-import websocket.stream;
-import websocket.tls : TlsConfig;
+import aurora_websocket.protocol : WebSocketException;
+import aurora_websocket.stream;
+import aurora_websocket.tls : TlsConfig;
 
 // ============================================================================
 // EXCEPTIONS

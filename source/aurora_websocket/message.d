@@ -9,7 +9,7 @@
  *
  * Standards: RFC 6455 - The WebSocket Protocol
  */
-module websocket.message;
+module aurora_websocket.message;
 
 // ============================================================================
 // MESSAGE TYPES

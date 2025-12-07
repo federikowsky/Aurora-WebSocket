@@ -32,7 +32,7 @@
  * License: MIT
  * Standards: RFC 6455 Section 5
  */
-module websocket.protocol;
+module aurora_websocket.protocol;
 
 import std.exception : enforce;
 

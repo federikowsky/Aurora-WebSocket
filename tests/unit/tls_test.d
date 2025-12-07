@@ -1,9 +1,9 @@
 /**
- * Unit tests for websocket.tls module
+ * Unit tests for aurora_websocket.tls module
  */
 module tests.unit.tls_test;
 
-import websocket.tls;
+import aurora_websocket.tls;
 
 // Test TlsConfig defaults
 unittest {

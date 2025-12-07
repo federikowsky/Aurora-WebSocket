@@ -8,8 +8,8 @@ module tests.unit.extension_test;
 import std.algorithm : canFind;
 import std.array : appender;
 
-import websocket.extension;
-import websocket.protocol : Frame, Opcode;
+import aurora_websocket.extension;
+import aurora_websocket.protocol : Frame, Opcode;
 
 // ============================================================================
 // EXTENSION PARAMETER PARSING TESTS

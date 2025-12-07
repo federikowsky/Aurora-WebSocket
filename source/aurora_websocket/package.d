@@ -14,7 +14,7 @@
  *
  * Quick Start (Server):
  * ---
- * import websocket;
+ * import aurora_websocket;
  *
  * // You provide the stream adapter for your transport (vibe-d, etc.)
  * class MyTCPAdapter : IWebSocketStream { /+ implement methods +/ }
@@ -54,17 +54,17 @@
  * Standards: RFC 6455
  * See_Also: https://tools.ietf.org/html/rfc6455
  */
-module websocket;
+module aurora_websocket;
 
 // ============================================================================
 // PUBLIC API RE-EXPORTS
 // ============================================================================
 
 // Message types and utilities
-public import websocket.message : MessageType, CloseCode, Message, isValidCloseCode;
+public import aurora_websocket.message : MessageType, CloseCode, Message, isValidCloseCode;
 
 // Protocol-level types (for advanced use)
-public import websocket.protocol : 
+public import aurora_websocket.protocol : 
     Opcode,
     Frame,
     encodeFrame,
@@ -85,7 +85,7 @@ public import websocket.protocol :
     encodeFrameInto;
 
 // Handshake utilities (server mode)
-public import websocket.handshake :
+public import aurora_websocket.handshake :
     WS_MAGIC_GUID,
     WS_VERSION,
     computeAcceptKey,
@@ -104,27 +104,27 @@ public import websocket.handshake :
     validateSelectedSubprotocol;
 
 // Stream abstraction
-public import websocket.stream :
+public import aurora_websocket.stream :
     IWebSocketStream,
     MockWebSocketStream,
     WebSocketStreamException;
 
 // Connection management
-public import websocket.connection :
+public import aurora_websocket.connection :
     ConnectionMode,
     WebSocketConfig,
     WebSocketConnection,
     WebSocketClosedException;
 
 // Client API
-public import websocket.client :
+public import aurora_websocket.client :
     WebSocketUrl,
     parseWebSocketUrl,
     WebSocketClient,
     WebSocketClientException;
 
 // Extension support
-public import websocket.extension :
+public import aurora_websocket.extension :
     IWebSocketExtension,
     PerMessageDeflateConfig,
     PerMessageDeflate,
@@ -135,12 +135,12 @@ public import websocket.extension :
     buildExtensionsHeader;
 
 // TLS configuration for secure WebSocket (wss://)
-public import websocket.tls :
+public import aurora_websocket.tls :
     TlsPeerValidation,
     TlsConfig;
 
 // Backpressure and flow control
-public import websocket.backpressure :
+public import aurora_websocket.backpressure :
     MessagePriority,
     BackpressureState,
     BackpressureConfig,
