@@ -1,165 +1,158 @@
-# Aurora-WebSocket
+<p align="center">
+  <h1 align="center">🔌 Aurora-WebSocket</h1>
+  <p align="center">
+    <strong>RFC 6455 WebSocket library for D</strong>
+  </p>
+  <p align="center">
+    Zero dependencies • Transport agnostic • Protocol-only design
+  </p>
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![D](https://img.shields.io/badge/D-red.svg)](https://dlang.org/)
-[![RFC 6455](https://img.shields.io/badge/RFC-6455-blue.svg)](https://tools.ietf.org/html/rfc6455)
-[![Tests](https://img.shields.io/badge/tests-9%20modules%20passing-brightgreen)](tests/)
+<p align="center">
+  <a href="https://code.dlang.org/packages/aurora-websocket"><img src="https://img.shields.io/dub/v/aurora-websocket?style=flat-square&color=blue" alt="DUB Version"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="License: MIT"></a>
+  <a href="https://tools.ietf.org/html/rfc6455"><img src="https://img.shields.io/badge/RFC-6455-blue.svg?style=flat-square" alt="RFC 6455"></a>
+  <a href="https://dlang.org/"><img src="https://img.shields.io/badge/D-2.105+-red.svg?style=flat-square" alt="D Language"></a>
+</p>
 
-**RFC 6455 compliant WebSocket library for D - Zero dependencies, protocol-only implementation.**
+---
+
+## Philosophy
+
+> WebSocket libraries should be **protocol-only**. Connection pooling, auto-reconnect, and transport adapters belong in your application framework.
+
+Aurora-WebSocket implements the WebSocket protocol (RFC 6455) without opinions about your transport layer. Bring your own TCP/TLS stream.
 
 ## Features
 
-- ✅ **Zero dependencies** - Only druntime/Phobos required
-- ✅ **Transport agnostic** - Works with any stream via `IWebSocketStream`
-- ✅ **Full RFC 6455 compliance** - Frame encoding/decoding, masking, fragmentation
-- ✅ **Client & Server modes** - Both directions supported
-- ✅ **TLS configuration** - `TlsConfig` struct for secure connections
-- ✅ **Per-Message Deflate** - RFC 7692 compression extension support
+- ✅ **Zero dependencies** — Only druntime/Phobos
+- 🔌 **Transport agnostic** — Works with any `IWebSocketStream` implementation
+- 📋 **Full RFC 6455** — Frame encoding, masking, fragmentation, close handshake
+- 🔄 **Client & Server** — Both modes supported
+- 📦 **Per-Message Deflate** — RFC 7692 compression (optional)
+- 🚦 **Backpressure** — Flow control for slow clients
 
 ### What's NOT included (by design)
 
-- ❌ Connection pooling (implement in your application/framework)
-- ❌ Auto-reconnect (implement in your application/framework)  
-- ❌ TCP/TLS adapters (implement `IWebSocketStream` for your transport)
-
-> **Philosophy**: WebSocket libraries should be "protocol-only". Higher-level features like pooling and reconnection belong in the application framework, not the protocol library.
+- ❌ TCP/TLS socket implementation
+- ❌ Connection pooling  
+- ❌ Auto-reconnect logic
 
 ## Installation
 
+### DUB
+
 ```json
-{
-    "dependencies": {
-        "aurora-websocket": "~>1.0.0"
-    }
+"dependencies": {
+    "aurora-websocket": "~>1.0.0"
 }
 ```
 
 ## Quick Start
 
-### 1. Implement IWebSocketStream for your transport
+### Step 1: Implement IWebSocketStream
+
+Adapt your transport layer to the stream interface:
 
 ```d
 import websocket;
 
-// Example: Adapter for vibe-d TCPConnection
-class VibeTCPAdapter : IWebSocketStream {
-    private TCPConnection conn;
+class MyTCPAdapter : IWebSocketStream {
+    private MyTCPSocket socket;
     
-    this(TCPConnection conn) { this.conn = conn; }
+    this(MyTCPSocket s) { socket = s; }
     
     ubyte[] read(ubyte[] buffer) @safe {
-        auto available = conn.peek();
-        auto toRead = min(available, buffer.length);
-        conn.read(buffer[0..toRead]);
-        return buffer[0..toRead];
+        return socket.read(buffer);
     }
     
     ubyte[] readExactly(size_t n) @safe {
         auto buf = new ubyte[](n);
-        conn.read(buf);
+        socket.readFully(buf);
         return buf;
     }
     
     void write(const(ubyte)[] data) @safe {
-        conn.write(data);
+        socket.write(data);
     }
     
-    void flush() @safe { conn.flush(); }
-    @property bool connected() @safe nothrow { return conn.connected; }
-    void close() @safe { conn.close(); }
+    void flush() @safe { socket.flush(); }
+    @property bool connected() @safe nothrow { return socket.isOpen; }
+    void close() @safe { socket.close(); }
 }
 ```
 
-### 2. Server Mode - Handle WebSocket Upgrade
+### Step 2: Server — Handle WebSocket Upgrade
 
 ```d
 import websocket;
 
-void handleWebSocketUpgrade(Request req, TCPConnection conn) {
-    // Validate HTTP upgrade request
+void handleUpgrade(HTTPRequest req, TCPSocket socket) {
+    // Validate upgrade request
     auto validation = validateUpgradeRequest(req.method, req.headers);
     if (!validation.valid) {
-        conn.write(cast(ubyte[]) buildBadRequestResponse(validation.error));
-        conn.close();
+        socket.write(cast(ubyte[]) "HTTP/1.1 400 Bad Request\r\n\r\n");
         return;
     }
     
-    // Send HTTP 101 Switching Protocols
-    conn.write(cast(ubyte[]) buildUpgradeResponse(validation.clientKey));
+    // Send 101 Switching Protocols
+    auto response = buildUpgradeResponse(validation.clientKey);
+    socket.write(cast(ubyte[]) response);
     
-    // Create WebSocket connection with your adapter
-    auto stream = new VibeTCPAdapter(conn);
+    // Create WebSocket connection
+    auto stream = new MyTCPAdapter(socket);
     auto ws = new WebSocketConnection(stream);
     scope(exit) ws.close();
     
-    // Echo server loop
+    // Echo server
     while (ws.connected) {
-        try {
-            auto msg = ws.receive();
-            if (msg.type == MessageType.Text) {
-                ws.send("Echo: " ~ msg.text);
-            } else if (msg.type == MessageType.Binary) {
-                ws.send(msg.data);
-            }
-        } catch (WebSocketClosedException e) {
+        auto msg = ws.receive();
+        
+        if (msg.type == MessageType.Text) {
+            ws.send("Echo: " ~ msg.text);
+        } else if (msg.type == MessageType.Close) {
             break;
         }
     }
 }
 ```
 
-### 3. Client Mode
+### Step 3: Client — Connect to Server
 
 ```d
 import websocket;
 
-void connectToServer() {
+void connectToServer(string host, ushort port) {
+    auto socket = new TCPSocket(host, port);
+    auto stream = new MyTCPAdapter(socket);
+    
     // Parse WebSocket URL
-    auto url = parseWebSocketUrl("ws://localhost:8080/chat");
+    auto url = parseWebSocketUrl("ws://example.com/chat");
     
-    // Create TCP connection (using your networking library)
-    auto tcpConn = connectTCP(url.host, url.port);
-    auto stream = new VibeTCPAdapter(tcpConn);
-    
-    // Perform WebSocket handshake
+    // Perform handshake
     auto ws = WebSocketClient.connect(stream, url);
     scope(exit) ws.close();
     
-    // Send and receive
+    // Send message
     ws.send("Hello, server!");
-    auto response = ws.receive();
-    writeln("Received: ", response.text);
+    
+    // Receive response
+    auto msg = ws.receive();
+    writeln("Received: ", msg.text);
 }
 ```
 
-## API Reference
+## API Overview
 
-### Core Types
+### Message Types
 
 ```d
-// Message types
-enum MessageType { Text, Binary, Close, Ping, Pong }
-
-// Close codes (RFC 6455 Section 7.4)
-enum CloseCode : ushort {
-    Normal = 1000,
-    GoingAway = 1001,
-    ProtocolError = 1002,
-    UnsupportedData = 1003,
-    InvalidPayload = 1007,
-    PolicyViolation = 1008,
-    MessageTooBig = 1009,
-    MandatoryExtension = 1010,
-    InternalError = 1011
-}
-
-// WebSocket message
-struct Message {
-    MessageType type;
-    ubyte[] data;
-    @property string text();           // For Text messages
-    @property CloseCode closeCode();   // For Close messages
-    @property string closeReason();    // For Close messages
+enum MessageType {
+    Text,    // UTF-8 text
+    Binary,  // Raw bytes
+    Close,   // Connection close
+    Ping,    // Heartbeat request
+    Pong     // Heartbeat response
 }
 ```
 
@@ -167,163 +160,124 @@ struct Message {
 
 ```d
 class WebSocketConnection {
-    // Send data
+    // Send
     void send(string text);
     void send(const(ubyte)[] binary);
-    void ping(const(ubyte)[] data = null);
-    void pong(const(ubyte)[] data = null);
-    void close(CloseCode code = CloseCode.Normal, string reason = "");
+    void ping(const(ubyte)[] payload = null);
+    void pong(const(ubyte)[] payload = null);
     
-    // Receive data (blocking)
+    // Receive
     Message receive();
     
-    // Connection state
+    // Control
+    void close(CloseCode code = CloseCode.Normal, string reason = "");
     @property bool connected();
 }
 ```
 
-### Stream Interface
+### Message
 
 ```d
-interface IWebSocketStream {
-    ubyte[] read(ubyte[] buffer) @safe;       // Non-blocking
-    ubyte[] readExactly(size_t n) @safe;      // Blocking
-    void write(const(ubyte)[] data) @safe;    // Blocking
-    void flush() @safe;
-    @property bool connected() @safe nothrow;
-    void close() @safe;
-}
-```
-
-### Handshake Utilities
-
-```d
-// Server: Validate upgrade request
-auto validation = validateUpgradeRequest("GET", headers);
-if (!validation.valid) {
-    // validation.error contains reason
-}
-
-// Server: Build 101 response
-string response = buildUpgradeResponse(validation.clientKey);
-string response = buildUpgradeResponse(clientKey, "graphql-ws");  // with subprotocol
-
-// Server: Build 400 response
-string error = buildBadRequestResponse("Invalid key");
-
-// Client: Generate random key
-string key = generateSecWebSocketKey();
-
-// Client: Build upgrade request
-string request = buildUpgradeRequest(host, path, key);
-
-// Client: Validate server response
-auto result = validateUpgradeResponse(responseStr, sentKey);
-```
-
-### TLS Configuration
-
-```d
-// TLS validation modes
-enum TlsPeerValidation {
-    trustedCert,   // Full validation (recommended)
-    validCert,     // Validate cert, allow untrusted CA
-    requireCert,   // Only check cert exists
-    none           // Skip validation (INSECURE!)
-}
-
-// Configuration struct (pass to your TLS adapter)
-struct TlsConfig {
-    TlsPeerValidation peerValidation = TlsPeerValidation.trustedCert;
-    string caCertFile = null;
-    string clientCertFile = null;  // For mutual TLS
-    string clientKeyFile = null;
-    string sniHost = null;
-    string minVersion = null;
+struct Message {
+    MessageType type;
+    ubyte[] data;
     
-    static TlsConfig insecure();   // For testing only!
+    @property string text();           // For Text messages
+    @property CloseCode closeCode();   // For Close messages
+    @property string closeReason();    // For Close messages
 }
 ```
 
-### Configuration
+### Close Codes (RFC 6455)
+
+| Code | Name | Description |
+|------|------|-------------|
+| 1000 | Normal | Normal closure |
+| 1001 | GoingAway | Server/client going away |
+| 1002 | ProtocolError | Protocol error |
+| 1003 | UnsupportedData | Unsupported data type |
+| 1008 | PolicyViolation | Policy violation |
+| 1009 | MessageTooBig | Message too large |
+| 1011 | InternalError | Server error |
+
+## Configuration
 
 ```d
-struct WebSocketConfig {
-    size_t maxFrameSize = 64 * 1024;           // 64KB
-    size_t maxMessageSize = 16 * 1024 * 1024;  // 16MB
-    bool autoReplyPing = true;
-    ConnectionMode mode = ConnectionMode.server;
-}
+WebSocketConfig config;
+config.maxFrameSize = 64 * 1024;       // 64 KB
+config.maxMessageSize = 16 * 1024 * 1024;  // 16 MB
+config.autoReplyPing = true;           // Auto pong
+config.mode = ConnectionMode.server;   // or .client
 
-auto config = WebSocketConfig();
-config.mode = ConnectionMode.client;  // For client connections
 auto ws = new WebSocketConnection(stream, config);
 ```
 
-### Per-Message Deflate (RFC 7692)
+## Backpressure (Flow Control)
+
+Handle slow clients without memory exhaustion:
 
 ```d
-// Configure compression
-auto deflateConfig = PerMessageDeflateConfig();
-deflateConfig.compressionLevel = 6;
-deflateConfig.minCompressSize = 64;
+import websocket.backpressure;
 
-auto deflate = new PerMessageDeflate(deflateConfig, true);  // isClient=true
+auto config = BackpressureConfig();
+config.maxSendBufferSize = 4 * 1024 * 1024;  // 4 MB buffer
+config.slowClientTimeout = 30.seconds;
 
-// Generate extension offer for handshake
-string offer = deflate.generateOffer();
+auto bpws = new BackpressureWebSocket(connection, config);
 
-// Accept offer (server-side)
-string response = deflate.acceptOffer(clientOffer);
+bpws.onDrain = () => writeln("Buffer drained");
+bpws.onSlowClient = () => writeln("Slow client detected");
 
-// Transform frames
-auto compressed = deflate.transformOutgoing(frame);
-auto decompressed = deflate.transformIncoming(frame);
+// Send with priority
+bpws.send("important", MessagePriority.HIGH);
+bpws.send("normal data", MessagePriority.NORMAL);
 ```
 
-## Exception Hierarchy
+## Documentation
 
-```d
-WebSocketException                    // Base class
-├── WebSocketProtocolException        // Invalid frames, masking errors
-├── WebSocketHandshakeException       // Upgrade failures  
-├── WebSocketClosedException          // Connection closed (code + reason)
-├── WebSocketStreamException          // I/O errors
-└── WebSocketExtensionException       // Extension negotiation errors
-```
+- [Technical Specifications](docs/specs.md) — Complete API reference
+- [RFC 6455](https://tools.ietf.org/html/rfc6455) — WebSocket Protocol
+- [RFC 7692](https://tools.ietf.org/html/rfc7692) — Per-Message Deflate
 
-## Architecture
+## Building
 
-```
-aurora-websocket/
-├── source/websocket/
-│   ├── package.d      # Public API re-exports
-│   ├── protocol.d     # Frame encode/decode, masking
-│   ├── message.d      # Message types, CloseCode
-│   ├── handshake.d    # HTTP upgrade validation
-│   ├── connection.d   # WebSocketConnection class
-│   ├── client.d       # WebSocketClient, URL parsing
-│   ├── stream.d       # IWebSocketStream interface
-│   ├── tls.d          # TlsConfig struct
-│   └── extension.d    # Per-message deflate
-└── tests/
-    └── unit/          # Unit tests
+### Requirements
+
+- **D Compiler**: LDC 1.35+ or DMD 2.105+
+
+### Make Targets
+
+```bash
+make lib    # Build library
+dub test    # Run unit tests
+make clean  # Clean artifacts
 ```
 
 ## Testing
 
 ```bash
-# Run unit tests
+# Unit tests
 dub test
 
-# Build library
-dub build
+# Autobahn test suite (requires vibe-d)
+cd tests/autobahn
+./run_tests.sh
 ```
+
+## Contributing
+
+Contributions welcome! Please ensure:
+
+1. Tests pass (`dub test`)
+2. RFC 6455 compliance maintained
+3. No external dependencies added
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](LICENSE)
 
-## Related Projects
+---
 
-- [Aurora Framework](https://github.com/federikowsky/Aurora) - High-performance D web framework
+<p align="center">
+  <sub>Built with ❤️ for the D community</sub>
+</p>

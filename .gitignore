@@ -49,6 +49,4 @@ trace.def
 # User-specific files
 plan.md
 
-# Autobahn test suite
-tests/autobahn
 benchmarks/
