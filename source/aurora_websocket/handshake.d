@@ -30,13 +30,14 @@
  */
 module aurora_websocket.handshake;
 
-import std.algorithm : canFind, map, splitter;
+import std.algorithm : all, canFind, map, splitter;
 import std.array : array;
-import std.ascii : toLower;
+import std.ascii : isAlphaNum, toLower;
 import std.base64 : Base64;
 import std.digest.sha : SHA1;
 import std.string : strip, toLower;
 import std.uni : toLower;
+import std.utf : byCodeUnit;
 
 import aurora_websocket.protocol : WebSocketException;
 
@@ -560,12 +561,19 @@ UpgradeValidation validateUpgradeRequest(string method, const string[string] hea
         result.error = "Missing Sec-WebSocket-Key header";
         return result;
     }
-    result.clientKey = *keyHeader;
-    // Basic validation: should be base64, approximately 24 chars for 16 bytes
-    if (result.clientKey.length < 20 || result.clientKey.length > 30) {
+    auto key = *keyHeader;
+    if (key.length != 24) {
         result.error = "Invalid Sec-WebSocket-Key length";
         return result;
     }
+    // A 16-byte key has 22 Base64 symbols and two padding bytes. The
+    // accept hash uses the encoded key, so no decoded buffer is needed.
+    if (key[$ - 2 .. $] != "==" ||
+        !key[0 .. $ - 2].byCodeUnit.all!(c => isAlphaNum(c) || c == '+' || c == '/')) {
+        result.error = "Invalid Sec-WebSocket-Key encoding";
+        return result;
+    }
+    result.clientKey = key;
 
     // Check Sec-WebSocket-Version (must be 13)
     auto versionHeader = "sec-websocket-version" in headers;

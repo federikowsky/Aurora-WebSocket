@@ -255,6 +255,27 @@ unittest {
     assert(result.error == "Invalid Sec-WebSocket-Key length");
 }
 
+@("validateUpgradeRequest rejects keys outside the 16-byte Base64 grammar")
+unittest {
+    string[string] headers;
+    headers["host"] = "example.com";
+    headers["upgrade"] = "websocket";
+    headers["connection"] = "Upgrade";
+    headers["sec-websocket-version"] = "13";
+
+    foreach (key; [
+        "!GhlIHNhbXBsZSBub25jZQ==", // Wrong alphabet, same length
+        "dGhlIHNhbXBsZSBub25jZQAA", // Valid Base64, 18 decoded bytes
+        "dGhlIHNhbXBsZSBub25jZQA=", // Valid Base64, 17 decoded bytes
+        "dGhlIHNhbXBsZSBub=5jZQ==", // Padding before the end
+        "dGhlIHNhbXBsZSBub25jZQ=Z", // Wrong second padding character
+        "\xFFGhlIHNhbXBsZSBub25jZQ==", // Invalid UTF-8 must be rejected, not thrown
+    ]) {
+        headers["sec-websocket-key"] = key;
+        assert(!validateUpgradeRequest("GET", headers).valid, key);
+    }
+}
+
 @("validateUpgradeRequest rejects missing Sec-WebSocket-Version")
 unittest {
     string[string] headers;
