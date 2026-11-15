@@ -110,6 +110,7 @@ unittest {
     } catch (WebSocketClosedException e) {
         assert(e.code == CloseCode.InvalidPayload);
     }
+    assert(!stream.connected, "protocol failure must close the transport");
 }
 
 @("Connection rejects overlong UTF-8 encodings")
@@ -212,4 +213,32 @@ unittest {
     assert(pongResult.success);
     assert(pongResult.frame.opcode == Opcode.Pong);
     assert(pongResult.frame.payload == cast(ubyte[]) "ping");
+}
+
+@("Connection closes the transport after replying to a peer Close")
+unittest {
+    auto stream = new MockWebSocketStream();
+    auto conn = new WebSocketConnection(stream);
+
+    Frame closeFrame;
+    closeFrame.fin = true;
+    closeFrame.opcode = Opcode.Close;
+    closeFrame.masked = true;
+    closeFrame.maskKey = generateMaskKey();
+    closeFrame.payload = [0x03, 0xE8]; // 1000 Normal Closure
+    stream.pushReadData(encodeFrame(closeFrame));
+
+    try {
+        conn.receive();
+        assert(false, "peer Close must terminate receive");
+    } catch (WebSocketClosedException e) {
+        assert(e.code == CloseCode.Normal);
+    }
+
+    auto reply = decodeFrame(stream.writtenData, false);
+    assert(reply.success);
+    assert(reply.frame.opcode == Opcode.Close);
+    assert(reply.frame.payload == closeFrame.payload);
+    assert(!conn.connected);
+    assert(!stream.connected, "completed close handshake must close the transport");
 }

@@ -344,8 +344,8 @@ WebSocketException
 ├── WebSocketProtocolException   // Frame/protocol errors
 ├── WebSocketHandshakeException  // Upgrade failures
 ├── WebSocketClosedException     // Connection closed
-│       .closeCode: CloseCode
-│       .closeReason: string
+│       .code: CloseCode
+│       .reason: string
 ├── WebSocketStreamException     // I/O errors
 └── WebSocketExtensionException  // Extension errors
 ```
@@ -390,13 +390,17 @@ WebSocketException
 
 | Feature | Status |
 |---------|--------|
-| Frame format | ✅ Full |
-| Masking | ✅ Full |
-| Fragmentation | ✅ Full |
-| Close handshake | ✅ Full |
-| Ping/Pong | ✅ Full |
-| Status codes | ✅ Full |
-| UTF-8 validation | ⚠️ Partial (relies on D string) |
+| Frame format | Implemented; unit-tested cases |
+| Masking | Implemented; unit-tested cases |
+| Fragmentation | Implemented; unit-tested cases |
+| Close handshake | Implemented; local and peer Close unit paths |
+| Ping/Pong | Implemented; unit-tested cases |
+| Status codes | Implemented; unit-tested cases |
+| UTF-8 validation | Implemented; targeted valid and invalid unit cases |
+
+This table describes implemented and tested scope. It is not an exhaustive RFC
+conformance certification; the Autobahn suite and broader adversarial coverage
+must be run and reported separately.
 
 ### 12.2 RFC 7692 Compliance (Per-Message Deflate)
 
@@ -426,6 +430,7 @@ dub test
 |--------|-------|
 | protocol | Frame encode/decode, masking |
 | message | Types, close codes |
+| connection | Message handling, UTF-8 rejection, peer Close and transport lifetime |
 | handshake | Server/client validation |
 | stream | MockStream behavior |
 | tls | Config defaults |

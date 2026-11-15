@@ -16,7 +16,7 @@ Aurora-WebSocket implements the WebSocket protocol without opinions about your t
 
 - Zero external dependencies (only druntime/Phobos)
 - Transport agnostic via `IWebSocketStream` interface
-- Full RFC 6455 compliance
+- RFC 6455 framing, masking, fragmentation, control frames, and opening handshake support
 - Both client and server modes
 - Optional RFC 7692 per-message deflate compression
 - Backpressure support for flow control
@@ -96,17 +96,23 @@ void handleUpgrade(HTTPRequest req, TCPSocket socket) {
     auto ws = new WebSocketConnection(stream);
     scope(exit) ws.close();
     
-    while (ws.connected) {
-        auto msg = ws.receive();
-        
-        if (msg.type == MessageType.Text) {
-            ws.send("Echo: " ~ msg.text);
-        } else if (msg.type == MessageType.Close) {
-            break;
+    try {
+        while (ws.connected) {
+            auto msg = ws.receive();
+            if (msg.type == MessageType.Text) {
+                ws.send("Echo: " ~ msg.text);
+            }
         }
+    } catch (WebSocketClosedException) {
+        // The peer Close was acknowledged and the stream is now closed.
     }
 }
 ```
+
+`WebSocketConnection` owns the supplied `IWebSocketStream`. A local close,
+completed peer close handshake, or terminal protocol failure closes that
+stream. `receive()` reports a peer Close with `WebSocketClosedException`; it
+does not return a `MessageType.Close` message.
 
 ### Step 3: Client Mode
 

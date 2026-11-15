@@ -172,7 +172,9 @@ class WebSocketConnection {
      * Create a WebSocket connection from a stream.
      *
      * The stream should already be connected and the HTTP upgrade
-     * handshake should already be complete.
+     * handshake should already be complete. WebSocketConnection owns the
+     * stream for its lifetime and closes it after a local close, a completed
+     * peer close handshake, or a terminal protocol failure.
      *
      * Params:
      *   stream = Connected stream (e.g., VibeTCPAdapter)
@@ -362,7 +364,10 @@ class WebSocketConnection {
      *   reason = Optional close reason (max ~123 bytes)
      */
     void close(CloseCode code = CloseCode.Normal, string reason = "") @trusted {
-        if (_closeSent) return;  // Already closing
+        if (_closeSent) {
+            terminateTransport();
+            return;
+        }
 
         // Build close payload
         ubyte[] payload;
@@ -395,8 +400,7 @@ class WebSocketConnection {
             // Ignore errors during close
         }
 
-        _connected = false;
-        _stream.close();
+        terminateTransport();
     }
 
     // ─────────────────────────────────────────────
@@ -605,7 +609,10 @@ class WebSocketConnection {
                     _closeSent = true;
                 }
 
-                _connected = false;
+                // Both sides have now sent and received Close. The closing
+                // handshake is complete, so this layer must release the
+                // transport before reporting the terminal message.
+                terminateTransport();
                 return true;
 
             default:
@@ -783,7 +790,14 @@ class WebSocketConnection {
             // Ignore errors during close
         }
         _closeSent = true;
+        terminateTransport();
+    }
+
+    private void terminateTransport() @safe {
         _connected = false;
+        if (_stream.connected) {
+            _stream.close();
+        }
     }
 
     private void waitForCloseResponse() @safe {
